@@ -41,7 +41,8 @@ static NSString *MPLocalIP(void){
 }
 static BOOL MPReadFully(int fd,void *buf,size_t n){
  uint8_t *p=buf;
- while(n){ssize_t r=recv(fd,p,n,0);if(r<=0){if(r<0&&errno==EINTR)continue;return NO;}p+=r;n-=(size_t)r;}
+ // read() et non recv() : le flux vidéo arrive par un tube local, pas par une connexion réseau
+ while(n){ssize_t r=read(fd,p,n);if(r<=0){if(r<0&&errno==EINTR)continue;return NO;}p+=r;n-=(size_t)r;}
  return YES;
 }
 static uint32_t MPBE24(const uint8_t *p){return (uint32_t)p[0]<<16|(uint32_t)p[1]<<8|p[2];}
