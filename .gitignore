@@ -2,3 +2,5 @@ ipad/build/
 coller-dans-srvhome.txt
 windows/version.txt
 *.log
+windows/MirrorPad.exe
+__pycache__/

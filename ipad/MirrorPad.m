@@ -10,9 +10,14 @@
 #include <ifaddrs.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <signal.h>
+#import <Security/Security.h>
+#import <Security/SecureTransport.h>
+#import <CommonCrypto/CommonDigest.h>
 
-#define MP_PORT 7270        // flux vidéo PC -> iPad
-#define MP_INPUT_PORT 7271  // tactile iPad -> PC (le PC se connecte et lit des lignes texte)
+#define MP_PORT 7272        // canal chiffré unique PC <-> iPad (image + tactile + contrôle)
 
 static int MPListen(int port){
  int s=socket(AF_INET,SOCK_STREAM,0);if(s<0)return -1;
@@ -48,7 +53,7 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 @property(nonatomic,copy) void (^onState)(BOOL connected);
 @property(nonatomic,copy) void (^onSample)(CMSampleBufferRef sample);
 @property(nonatomic,copy) void (^onSize)(CGSize size);
-- (void)start;
+- (void)runOnFd:(int)fd;
 - (void)takeBytes:(uint64_t*)bytes frames:(uint64_t*)frames; // compteurs depuis le dernier appel
 @end
 @implementation MPReceiver {
@@ -57,25 +62,15 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  volatile uint64_t _bytes,_frames;
 }
 - (void)takeBytes:(uint64_t*)bytes frames:(uint64_t*)frames {*bytes=_bytes;*frames=_frames;_bytes=0;_frames=0;}
-- (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
-- (void)serve {
- int srv=-1;
- for(;;){
-  if(srv<0){srv=MPListen(MP_PORT);if(srv<0){sleep(1);continue;}}
-  int c=accept(srv,NULL,NULL);
-  if(c<0){if(errno!=EINTR){close(srv);srv=-1;sleep(1);}continue;} // socket récupéré par iOS après mise en veille : on le recrée
-  int one=1;
-  setsockopt(c,IPPROTO_TCP,TCP_NODELAY,&one,sizeof one);
-  setsockopt(c,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof one);
-  struct timeval tv={.tv_sec=10};setsockopt(c,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof tv);
-  NSLog(@"MirrorPad: PC connecté");
+// Décode un flux FLV lu sur fd (extrémité de lecture d'un tube) dans un fil dédié
+- (void)runOnFd:(int)fd {
+ [NSThread detachNewThreadWithBlock:^{
   if(self.onState)self.onState(YES);
-  [self readFLV:c];
-  close(c);
-  if(_format){CFRelease(_format);_format=NULL;}
-  NSLog(@"MirrorPad: PC déconnecté");
+  [self readFLV:fd];
+  close(fd);
+  if(self->_format){CFRelease(self->_format);self->_format=NULL;}
   if(self.onState)self.onState(NO);
- }
+ }];
 }
 // FLV : en-tête 9 octets, puis [PreviousTagSize 4][en-tête de tag 11][données]...
 // Tag vidéo H.264 : [type/codec][AVCPacketType][CompositionTime 3][charge utile]
@@ -136,66 +131,262 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 
 #pragma mark - Tactile
 
-// Canal tactile / contrôle (port 7271) : le PC s'y connecte.
-//   iPad -> PC : gestes ("D x y" "M" "U" "R" "W n" "Z n" "T texte" "K BACK"), "O P|L" orientation,
-//                "P n" mesure de latence, "S fps mbps" qualité demandée
-//   PC -> iPad : "P n" réponse de latence, "N nom" nom du PC, "C fps mbps encodeur" réglages actifs
-@interface MPInputServer : NSObject
-@property(nonatomic,copy) void (^onLine)(NSString *line);      // appelé sur le fil principal
-@property(nonatomic,copy) void (^onConnect)(NSString *peer);   // idem, avec l'adresse du PC
+// Session chiffrée avec le PC (port 7272). Le PC se connecte et joue le rôle de serveur TLS :
+// l'iPad (client TLS) vérifie l'empreinte SHA-256 du certificat du PC mémorisée à l'appairage,
+// puis s'authentifie avec le jeton reçu à l'appairage.
+// Trames : [type 1 octet][longueur 3 octets][données]  1 = ligne de contrôle, 2 = vidéo FLV
+//   PC -> HELLO 2 <idPC> <nomPC> ; iPad -> AUTH <idIPad> <jeton> | PAIR <idIPad> <nomIPad> <nonce>
+//   PC -> OK | PAIRED <jeton> | ERR <raison> ; ensuite : "V NEW" / "V END" encadrent chaque flux vidéo.
+//   Lignes de contrôle : iPad -> PC gestes ("D x y" "M" "U" "R" "W n" "Z n" "T texte" "K BACK"), "O P|L", "P n", "S fps mbps"
+//                        PC -> iPad "P n", "N nom", "C fps mbps encodeur"
+static NSString *MPHex(const uint8_t *b,size_t n){
+ NSMutableString *h=[NSMutableString stringWithCapacity:n*2];
+ for(size_t i=0;i<n;i++)[h appendFormat:@"%02x",b[i]];
+ return h;
+}
+static NSString *MPEsc(NSString *t){
+ return [t stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~"]];
+}
+static OSStatus MPSSLRead(SSLConnectionRef c,void *data,size_t *len){
+ int fd=(int)(intptr_t)c;size_t want=*len,got=0;
+ while(got<want){
+  ssize_t r=recv(fd,(char*)data+got,want-got,0);
+  if(r>0){got+=(size_t)r;continue;}
+  if(r==0){*len=got;return errSSLClosedGraceful;}
+  if(errno==EINTR)continue;
+  *len=got;
+  return (errno==EAGAIN||errno==EWOULDBLOCK)?errSSLWouldBlock:errSSLClosedAbort;
+ }
+ *len=got;return noErr;
+}
+static OSStatus MPSSLWrite(SSLConnectionRef c,const void *data,size_t *len){
+ int fd=(int)(intptr_t)c;size_t want=*len,done=0;
+ while(done<want){
+  ssize_t r=send(fd,(const char*)data+done,want-done,0);
+  if(r>0){done+=(size_t)r;continue;}
+  if(r<0&&errno==EINTR)continue;
+  if(r<0&&(errno==EAGAIN||errno==EWOULDBLOCK)){struct pollfd p={fd,POLLOUT,0};if(poll(&p,1,5000)>0)continue;}
+  *len=done;return errSSLClosedAbort;
+ }
+ *len=done;return noErr;
+}
+// PC appairés : { idPC : { name, fp, token, date } }
+static NSDictionary *MPPairedPCs(void){return [NSUserDefaults.standardUserDefaults dictionaryForKey:@"pairedPCs"]?:@{};}
+static void MPSetPairedPC(NSString *pcId,NSDictionary *v){
+ NSMutableDictionary *d=[MPPairedPCs() mutableCopy];
+ if(v)d[pcId]=v;else [d removeObjectForKey:pcId];
+ [NSUserDefaults.standardUserDefaults setObject:d forKey:@"pairedPCs"];
+}
+static NSString *MPDeviceId(void){
+ NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+ NSString *i=[d stringForKey:@"deviceId"];
+ if(!i){i=[[NSUUID UUID].UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""].lowercaseString;[d setObject:i forKey:@"deviceId"];}
+ return i;
+}
+
+@interface MPSecureServer : NSObject
+@property(nonatomic,copy) void (^onLine)(NSString *line);                      // fil principal, après authentification
+@property(nonatomic,copy) void (^onAuthenticated)(NSString *pcName);           // fil principal
+@property(nonatomic,copy) void (^onClosed)(void);                              // fil principal
+@property(nonatomic,copy) void (^onPairing)(NSString *pcName,NSString *code);  // fil principal : afficher le code
+@property(nonatomic,copy) void (^onNotice)(NSString *title,NSString *text,BOOL ok); // fil principal : résultat / alerte
+@property(nonatomic,copy) void (^onVideoStart)(int fd);                        // fil réseau : nouveau flux à décoder
 @property(nonatomic,readonly) BOOL connected;
-@property(nonatomic,readonly,copy) NSString *peer;
+@property(atomic,readonly,copy) NSString *peer;
 - (void)start;
 - (void)send:(NSString*)line;
 @end
-@implementation MPInputServer { int _client; unsigned _gen; }
-- (instancetype)init {if((self=[super init]))_client=-1;return self;}
-- (BOOL)connected {return _client>=0;}
+@implementation MPSecureServer {
+ SSLContextRef _ctx;
+ int _wake[2];
+ NSMutableArray<NSData*> *_queue;
+ volatile BOOL _auth;
+ int _videoFd;
+}
+- (instancetype)init {
+ if((self=[super init])){_queue=[NSMutableArray array];pipe(_wake);fcntl(_wake[0],F_SETFL,O_NONBLOCK);fcntl(_wake[1],F_SETFL,O_NONBLOCK);_videoFd=-1;}
+ return self;
+}
+- (BOOL)connected {return _auth;}
 - (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
+- (void)ui:(dispatch_block_t)b {dispatch_async(dispatch_get_main_queue(),b);}
 - (void)serve {
  int srv=-1;
  for(;;){
-  if(srv<0){srv=MPListen(MP_INPUT_PORT);if(srv<0){sleep(1);continue;}}
+  if(srv<0){srv=MPListen(MP_PORT);if(srv<0){sleep(1);continue;}}
   struct sockaddr_in from;socklen_t len=sizeof from;
   int c=accept(srv,(struct sockaddr*)&from,&len);
   if(c<0){if(errno!=EINTR){close(srv);srv=-1;sleep(1);}continue;}
-  int one=1;
-  setsockopt(c,IPPROTO_TCP,TCP_NODELAY,&one,sizeof one);
-  setsockopt(c,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof one);
   char ip[INET_ADDRSTRLEN]="";inet_ntop(AF_INET,&from.sin_addr,ip,sizeof ip);
-  NSString *peer=@(ip);
-  dispatch_async(dispatch_get_main_queue(),^{
-   if(self->_client>=0)close(self->_client);
-   self->_client=c;unsigned gen=++self->_gen;self->_peer=peer;
-   NSLog(@"MirrorPad: canal tactile connecté (%@)",peer);
-   if(self.onConnect)self.onConnect(peer);
-   [NSThread detachNewThreadWithBlock:^{[self readFrom:c gen:gen];}];
-  });
+  _peer=@(ip);
+  [self runSession:c];   // une session à la fois ; la suivante attend la fin de celle-ci
  }
-}
-- (void)readFrom:(int)c gen:(unsigned)gen {
- NSMutableData *buf=[NSMutableData data];char tmp[2048];
- for(;;){
-  ssize_t r=recv(c,tmp,sizeof tmp,0);
-  if(r<=0)break;
-  [buf appendBytes:tmp length:(NSUInteger)r];
-  for(;;){
-   const char *bytes=buf.bytes;const char *nl=memchr(bytes,'\n',buf.length);
-   if(!nl)break;
-   NSUInteger n=(NSUInteger)(nl-bytes);
-   NSString *line=[[NSString alloc] initWithBytes:bytes length:n encoding:NSUTF8StringEncoding];
-   [buf replaceBytesInRange:NSMakeRange(0,n+1) withBytes:NULL length:0];
-   if(line.length)dispatch_async(dispatch_get_main_queue(),^{if(self.onLine)self.onLine(line);});
-  }
- }
- dispatch_async(dispatch_get_main_queue(),^{
-  if(self->_gen==gen&&self->_client>=0){close(self->_client);self->_client=-1;}
- });
 }
 - (void)send:(NSString*)line {
- if(_client<0)return;
- const char *s=line.UTF8String;size_t n=strlen(s);
- if(send(_client,s,n,0)!=(ssize_t)n){close(_client);_client=-1;}
+ if(!_auth)return;
+ if([line hasSuffix:@"\n"])line=[line substringToIndex:line.length-1];
+ [self enqueue:1 data:[line dataUsingEncoding:NSUTF8StringEncoding]];
+}
+- (void)enqueue:(uint8_t)type data:(NSData*)d {
+ NSMutableData *f=[NSMutableData dataWithLength:4];
+ uint8_t *h=f.mutableBytes;h[0]=type;h[1]=(uint8_t)(d.length>>16);h[2]=(uint8_t)(d.length>>8);h[3]=(uint8_t)d.length;
+ [f appendData:d];
+ @synchronized(_queue){[_queue addObject:f];}
+ uint8_t one=1;write(_wake[1],&one,1);
+}
+- (BOOL)write:(NSData*)d {
+ size_t done=0;
+ while(done<d.length){
+  size_t n=0;OSStatus st=SSLWrite(_ctx,(const uint8_t*)d.bytes+done,d.length-done,&n);
+  done+=n;
+  if(st!=noErr&&st!=errSSLWouldBlock)return NO;
+ }
+ return YES;
+}
+- (BOOL)sendNow:(NSString*)line {
+ NSData *d=[line dataUsingEncoding:NSUTF8StringEncoding];
+ NSMutableData *f=[NSMutableData dataWithLength:4];
+ uint8_t *h=f.mutableBytes;h[0]=1;h[1]=(uint8_t)(d.length>>16);h[2]=(uint8_t)(d.length>>8);h[3]=(uint8_t)d.length;
+ [f appendData:d];
+ return [self write:f];
+}
+- (void)endVideo {if(_videoFd>=0){close(_videoFd);_videoFd=-1;}}
+- (void)runSession:(int)fd {
+ int one=1;
+ setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof one);
+ setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof one);
+ fcntl(fd,F_SETFL,fcntl(fd,F_GETFL)|O_NONBLOCK);
+ _ctx=SSLCreateContext(NULL,kSSLClientSide,kSSLStreamType);
+ SSLSetIOFuncs(_ctx,MPSSLRead,MPSSLWrite);
+ SSLSetConnection(_ctx,(SSLConnectionRef)(intptr_t)fd);
+ SSLSetProtocolVersionMin(_ctx,kTLSProtocol12);
+ SSLSetSessionOption(_ctx,kSSLSessionOptionBreakOnServerAuth,true);   // on vérifie nous-mêmes le certificat (épinglage)
+ @synchronized(_queue){[_queue removeAllObjects];}
+ _auth=NO;
+ NSData *certDer=nil;NSString *fp=nil;
+ NSString *pcId=nil,*pcName=nil;BOOL pairing=NO;
+ NSMutableData *in=[NSMutableData data];
+ CFAbsoluteTime last=CFAbsoluteTimeGetCurrent(),start=last;
+
+ // 1. poignée de main TLS
+ for(;;){
+  OSStatus st=SSLHandshake(_ctx);
+  if(st==noErr)break;
+  if(st==errSSLPeerAuthCompleted){
+   SecTrustRef trust=NULL;SSLCopyPeerTrust(_ctx,&trust);
+   if(trust&&SecTrustGetCertificateCount(trust)>0){
+    CFDataRef der=SecCertificateCopyData(SecTrustGetCertificateAtIndex(trust,0));
+    certDer=(__bridge_transfer NSData*)der;
+    uint8_t h[CC_SHA256_DIGEST_LENGTH];CC_SHA256(certDer.bytes,(CC_LONG)certDer.length,h);
+    fp=MPHex(h,sizeof h);
+   }
+   if(trust)CFRelease(trust);
+   continue;
+  }
+  if(st==errSSLWouldBlock){
+   struct pollfd p={fd,POLLIN,0};
+   if(CFAbsoluteTimeGetCurrent()-start>10||poll(&p,1,1000)<0)goto done;
+   continue;
+  }
+  NSLog(@"MirrorPad: échec TLS %d",(int)st);goto done;
+ }
+ if(!fp)goto done;
+
+ // 2. boucle : lecture des trames, envoi de la file d'attente
+ for(;;){
+  size_t buffered=0;SSLGetBufferedReadSize(_ctx,&buffered);
+  if(!buffered){
+   struct pollfd p[2]={{fd,POLLIN,0},{_wake[0],POLLIN,0}};
+   if(poll(p,2,1000)<0&&errno!=EINTR)break;
+   if(p[1].revents){uint8_t tmp[64];while(read(_wake[0],tmp,sizeof tmp)>0){}}
+  }
+  // lecture
+  uint8_t buf[32768];
+  for(;;){
+   size_t n=0;OSStatus st=SSLRead(_ctx,buf,sizeof buf,&n);
+   if(n){[in appendBytes:buf length:n];last=CFAbsoluteTimeGetCurrent();}
+   if(st==errSSLWouldBlock)break;
+   if(st!=noErr)goto done;
+   if(!n)break;
+  }
+  // traitement des trames complètes
+  while(in.length>=4){
+   const uint8_t *h=in.bytes;size_t len=(size_t)h[1]<<16|(size_t)h[2]<<8|h[3];
+   if(in.length<4+len)break;
+   uint8_t type=h[0];
+   if(type==2){
+    if(_auth&&_videoFd>=0){
+     size_t w=0;while(w<len){ssize_t r=write(_videoFd,h+4+w,len-w);if(r<=0){if(r<0&&errno==EINTR)continue;[self endVideo];break;}w+=(size_t)r;}
+    }
+   } else if(type==1){
+    NSString *line=[[NSString alloc] initWithBytes:h+4 length:len encoding:NSUTF8StringEncoding]?:@"";
+    NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
+    NSString *k=p.firstObject;
+    if(!_auth){
+     if([k isEqualToString:@"HELLO"]&&p.count>=4){
+      pcId=p[2];pcName=[p[3] stringByRemovingPercentEncoding]?:p[3];
+      NSDictionary *known=MPPairedPCs()[pcId];
+      if(known){
+       if(![known[@"fp"] isEqualToString:fp]){
+        NSString *n=pcName;
+        [self sendNow:@"ERR CERT"];
+        [self ui:^{if(self.onNotice)self.onNotice(@"Connexion refusée",[NSString stringWithFormat:@"Le certificat de « %@ » a changé. Si ce PC a été réinstallé, oubliez-le dans Réglages puis appairez-le à nouveau.",n],NO);}];
+        goto done;
+       }
+       [self sendNow:[NSString stringWithFormat:@"AUTH %@ %@",MPDeviceId(),known[@"token"]]];
+      } else {
+       uint8_t nonce[16];SecRandomCopyBytes(kSecRandomDefault,sizeof nonce,nonce);
+       NSMutableData *m=[certDer mutableCopy];[m appendBytes:nonce length:sizeof nonce];
+       uint8_t d[CC_SHA256_DIGEST_LENGTH];CC_SHA256(m.bytes,(CC_LONG)m.length,d);
+       uint32_t v=((uint32_t)d[0]<<24|(uint32_t)d[1]<<16|(uint32_t)d[2]<<8|d[3])%1000000;
+       NSString *code=[NSString stringWithFormat:@"%06u",v],*n=pcName;
+       pairing=YES;
+       [self ui:^{if(self.onPairing)self.onPairing(n,code);}];
+       [self sendNow:[NSString stringWithFormat:@"PAIR %@ %@ %@",MPDeviceId(),MPEsc(UIDevice.currentDevice.name),MPHex(nonce,sizeof nonce)]];
+      }
+     } else if([k isEqualToString:@"OK"]||([k isEqualToString:@"PAIRED"]&&p.count>=2&&pairing)){
+      if(pairing)MPSetPairedPC(pcId,@{@"name":pcName?:@"PC",@"fp":fp,@"token":p[1],@"date":[NSDate date]});
+      _auth=YES;
+      NSString *n=pcName;BOOL wasPairing=pairing;
+      [self ui:^{
+       if(wasPairing&&self.onNotice)self.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);
+       if(self.onAuthenticated)self.onAuthenticated(n);
+      }];
+     } else if([k isEqualToString:@"ERR"]){
+      NSString *why=p.count>1?p[1]:@"",*n=pcName;
+      if([why isEqualToString:@"AUTH"]&&pcId)MPSetPairedPC(pcId,nil);   // le PC nous a oubliés : nouvel appairage au prochain essai
+      [self ui:^{if(self.onNotice)self.onNotice(@"Connexion refusée",[why isEqualToString:@"REFUSED"]?[NSString stringWithFormat:@"L'appairage a été refusé sur « %@ ».",n]:@"Le PC ne reconnaît plus cet iPad : un nouvel appairage va être proposé.",NO);}];
+      goto done;
+     }
+    } else if([k isEqualToString:@"V"]&&p.count>=2){
+     [self endVideo];
+     if([p[1] isEqualToString:@"NEW"]){
+      int pf[2];
+      if(pipe(pf)==0){
+       fcntl(pf[1],F_SETNOSIGPIPE,1);
+       _videoFd=pf[1];
+       if(self.onVideoStart)self.onVideoStart(pf[0]);else close(pf[0]);
+      }
+     }
+    } else {
+     [self ui:^{if(self.onLine)self.onLine(line);}];
+    }
+   }
+   [in replaceBytesInRange:NSMakeRange(0,4+len) withBytes:NULL length:0];
+  }
+  // écriture
+  NSArray<NSData*> *out;
+  @synchronized(_queue){out=[_queue copy];[_queue removeAllObjects];}
+  for(NSData *f in out)if(![self write:f])goto done;
+  // le PC envoie au moins un écho de latence par seconde : 20 s de silence = connexion perdue
+  if(CFAbsoluteTimeGetCurrent()-last>20)break;
+ }
+done:
+ [self endVideo];
+ BOOL wasAuth=_auth;_auth=NO;
+ SSLClose(_ctx);CFRelease(_ctx);_ctx=NULL;
+ close(fd);
+ [self ui:^{if(wasAuth&&self.onClosed)self.onClosed();}];
 }
 @end
 
@@ -592,7 +783,7 @@ static NSString *MPAgo(NSDate *date){
 @implementation MPSettingsPanel {
  UISegmentedControl *_fps,*_quality;
  UISwitch *_longPress,*_inertia,*_hud;
- UIStackView *_history;
+ UIStackView *_history,*_paired;
 }
 static const int MPQualities[3]={6,12,20};
 - (UILabel*)section:(NSString*)t {UILabel *l=MPLabel(t,12,UIFontWeightSemibold,.6,2);return l;}
@@ -640,12 +831,14 @@ static const int MPQualities[3]={6,12,20};
  _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];
  UILabel *note=MPLabel(@"La qualité est appliquée au PC dès qu'il est connecté.",13,UIFontWeightRegular,.6,0);
  _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
+ _paired=[UIStackView new];_paired.axis=UILayoutConstraintAxisVertical;_paired.spacing=8;_paired.alignment=UIStackViewAlignmentLeading;
 
  UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:@[head,
    [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
    [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
    [self section:@"AFFICHAGE"],[self row:@"Indicateur de performance" control:_hud],
-   [self section:@"DERNIERS PC"],_history]];
+   [self section:@"DERNIERS PC"],_history,
+   [self section:@"SÉCURITÉ"],_paired]];
  st.axis=UILayoutConstraintAxisVertical;st.spacing=12;st.translatesAutoresizingMaskIntoConstraints=NO;
  [st setCustomSpacing:22 afterView:head];
  for(UIView *v in st.arrangedSubviews)if([v isKindOfClass:UILabel.class]&&((UILabel*)v).font.pointSize==12)[st setCustomSpacing:8 afterView:v];
@@ -672,6 +865,21 @@ static const int MPQualities[3]={6,12,20};
  if(!h.count)[_history addArrangedSubview:MPLabel(@"Aucun PC pour l'instant.",15,UIFontWeightRegular,.6,0)];
  for(NSDictionary *e in h)
   [_history addArrangedSubview:MPLabel([NSString stringWithFormat:@"%@  ·  %@  ·  %@",e[@"name"],e[@"ip"],MPAgo(e[@"date"])],15,UIFontWeightRegular,.85,0)];
+ for(UIView *v in _paired.arrangedSubviews){[_paired removeArrangedSubview:v];[v removeFromSuperview];}
+ NSDictionary *pcs=MPPairedPCs();
+ NSMutableArray *names=[NSMutableArray array];for(NSDictionary *v in pcs.allValues)[names addObject:v[@"name"]?:@"PC"];
+ [_paired addArrangedSubview:MPLabel(pcs.count?[NSString stringWithFormat:@"PC autorisés (connexion chiffrée) : %@",[names componentsJoinedByString:@", "]]:@"Aucun PC appairé.",15,UIFontWeightRegular,.85,0)];
+ if(pcs.count){
+  UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
+  [b setTitle:@"Oublier tous les PC" forState:UIControlStateNormal];[b setTitleColor:MPRGB(0xFF8A8A,1) forState:UIControlStateNormal];
+  b.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+  [b addTarget:self action:@selector(forgetPCs) forControlEvents:UIControlEventTouchUpInside];
+  [_paired addArrangedSubview:b];
+ }
+}
+- (void)forgetPCs {
+ [NSUserDefaults.standardUserDefaults removeObjectForKey:@"pairedPCs"];
+ [self load];
 }
 - (void)qualityChanged {
  int fps=_fps.selectedSegmentIndex==1?60:30,mbps=MPQualities[MAX(0,_quality.selectedSegmentIndex)];
@@ -689,6 +897,56 @@ static const int MPQualities[3]={6,12,20};
  self.alpha=0;self.transform=CGAffineTransformMakeScale(1.03,1.03);
  [parent addSubview:self];
  [UIView animateWithDuration:.3 animations:^{self.alpha=1;self.transform=CGAffineTransformIdentity;}];
+}
+- (void)hide {
+ [UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];
+}
+@end
+
+// Carte « verre » au centre de l'écran : code d'appairage, résultat, alertes de sécurité
+@interface MPNoticeView : UIView
+- (instancetype)initWithTitle:(NSString*)title text:(NSString*)text code:(NSString*)code ok:(BOOL)ok;
+- (void)showIn:(UIView*)parent autoHide:(NSTimeInterval)delay;
+- (void)hide;
+@end
+@implementation MPNoticeView
+- (instancetype)initWithTitle:(NSString*)title text:(NSString*)text code:(NSString*)code ok:(BOOL)ok {
+ if(!(self=[super initWithFrame:CGRectZero]))return nil;
+ self.backgroundColor=[UIColor colorWithRed:.02 green:.03 blue:.12 alpha:.55];
+ UIVisualEffectView *card=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+ card.translatesAutoresizingMaskIntoConstraints=NO;card.layer.cornerRadius=28;card.clipsToBounds=YES;
+ card.layer.borderWidth=1;card.layer.borderColor=[UIColor colorWithWhite:1 alpha:.22].CGColor;
+ [self addSubview:card];
+ CAGradientLayer *tint=[CAGradientLayer layer];
+ tint.colors=@[(id)MPRGB(0x16C6FF,.30).CGColor,(id)MPRGB(0x3B5BFF,.25).CGColor,(id)MPRGB(0x7A2EF6,.32).CGColor];
+ tint.startPoint=CGPointMake(0,0);tint.endPoint=CGPointMake(1,1);tint.frame=CGRectMake(0,0,560,600);
+ [card.contentView.layer addSublayer:tint];
+ UILabel *badge=MPLabel(code?@"APPAIRAGE":(ok?@"C'EST FAIT":@"SÉCURITÉ"),12,UIFontWeightSemibold,.7,2.4);
+ UILabel *t=MPLabel(title,28,UIFontWeightBold,1,-.4);
+ UILabel *m=MPLabel(text,17,UIFontWeightRegular,.86,0);
+ NSMutableArray *items=[NSMutableArray arrayWithObjects:badge,t,m,nil];
+ if(code){
+  UILabel *c=[UILabel new];
+  c.attributedText=[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"%@ %@",[code substringToIndex:3],[code substringFromIndex:3]]
+   attributes:@{NSFontAttributeName:[UIFont monospacedDigitSystemFontOfSize:64 weight:UIFontWeightBold],NSForegroundColorAttributeName:UIColor.whiteColor,NSKernAttributeName:@4}];
+  [items insertObject:c atIndex:2];
+ }
+ UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:items];
+ st.axis=UILayoutConstraintAxisVertical;st.spacing=12;st.alignment=UIStackViewAlignmentLeading;st.translatesAutoresizingMaskIntoConstraints=NO;
+ [card.contentView addSubview:st];
+ [NSLayoutConstraint activateConstraints:@[
+  [card.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[card.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+  [card.widthAnchor constraintEqualToConstant:500],
+  [st.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:28],[st.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-28],
+  [st.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:32],[st.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-32]]];
+ [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hide)]];
+ return self;
+}
+- (void)showIn:(UIView*)parent autoHide:(NSTimeInterval)delay {
+ self.frame=parent.bounds;self.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ self.alpha=0;[parent addSubview:self];
+ [UIView animateWithDuration:.3 animations:^{self.alpha=1;}];
+ if(delay>0){__weak typeof(self) w=self;dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),dispatch_get_main_queue(),^{[w hide];});}
 }
 - (void)hide {
  [UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];
@@ -723,7 +981,9 @@ static const int MPQualities[3]={6,12,20};
  AVSampleBufferDisplayLayer *_video;
  MPHomeView *_home;
  MPReceiver *_receiver;
- MPInputServer *_input;
+ unsigned _decoderGen;
+ MPNoticeView *_notice;
+ MPSecureServer *_input;
  MPTouchView *_touch;
  NSNetService *_bonjour;
  NSTimer *_timer,*_statsTimer;
@@ -744,10 +1004,10 @@ static const int MPQualities[3]={6,12,20};
  _video.backgroundColor=UIColor.blackColor.CGColor;
  [self.view.layer addSublayer:_video];
 
- _input=[MPInputServer new];[_input start];
+ _input=[MPSecureServer new];
  _touch=[[MPTouchView alloc] initWithFrame:self.view.bounds];
  _touch.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
- __weak MPInputServer *weakInput=_input;
+ __weak MPSecureServer *weakInput=_input;
  __weak typeof(self) w=self;
  _touch.emit=^(NSString *line){[weakInput send:line];};
  _touch.onFourFingerTap=^{[w showSettings];};
@@ -763,21 +1023,46 @@ static const int MPQualities[3]={6,12,20};
  [_home.settingsButton addTarget:self action:@selector(showSettings) forControlEvents:UIControlEventTouchUpInside];
  [self.view addSubview:_home];
 
- _input.onConnect=^(NSString *peer){(void)peer;[w controlConnected];};
+ _input.onAuthenticated=^(NSString *pc){(void)pc;[w controlConnected];};
  _input.onLine=^(NSString *line){[w controlLine:line];};
+ _input.onPairing=^(NSString *pc,NSString *code){[w showNotice:@"Nouveau PC" text:[NSString stringWithFormat:@"« %@ » demande à utiliser cet iPad. Vérifiez que ce code s'affiche sur le PC, puis cliquez sur « Accepter » là-bas.",pc] code:code ok:YES];};
+ _input.onNotice=^(NSString *title,NSString *text,BOOL ok){[w showNotice:title text:text code:nil ok:ok];};
+ _input.onVideoStart=^(int fd){dispatch_async(dispatch_get_main_queue(),^{[w startDecoder:fd];});};
+ [_input start];
  [self applyPreferences];
  [self refreshLastPC];
- _receiver=[MPReceiver new];
- _receiver.onState=^(BOOL c){dispatch_async(dispatch_get_main_queue(),^{[w setConnected:c];});};
- __weak MPTouchView *weakTouch=_touch;
- _receiver.onSize=^(CGSize sz){dispatch_async(dispatch_get_main_queue(),^{weakTouch.videoSize=sz;[w setStreamSize:sz];});};
- _receiver.onSample=^(CMSampleBufferRef sb){CFRetain(sb);dispatch_async(dispatch_get_main_queue(),^{[w enqueue:sb];CFRelease(sb);});};
- [_receiver start];
  [self refreshAddress];
  [self publishBonjour];
  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(publishBonjour) name:UIApplicationWillEnterForegroundNotification object:nil];
  _timer=[NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t){(void)t;[w refreshAddress];}];
  _statsTimer=[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t){(void)t;[w statsTick];}];
+}
+
+#pragma mark Flux vidéo et alertes
+// Un décodeur par flux : à chaque relance de ffmpeg (rotation, qualité…) le PC envoie « V NEW »
+- (void)startDecoder:(int)fd {
+ MPReceiver *r=[MPReceiver new];
+ unsigned gen=++_decoderGen;
+ __weak typeof(self) w=self;__weak MPTouchView *weakTouch=_touch;
+ r.onState=^(BOOL c){dispatch_async(dispatch_get_main_queue(),^{[w decoder:gen connected:c];});};
+ r.onSize=^(CGSize sz){dispatch_async(dispatch_get_main_queue(),^{weakTouch.videoSize=sz;[w setStreamSize:sz];});};
+ r.onSample=^(CMSampleBufferRef sb){CFRetain(sb);dispatch_async(dispatch_get_main_queue(),^{[w enqueue:sb gen:gen];CFRelease(sb);});};
+ _receiver=r;
+ [r runOnFd:fd];
+}
+- (void)decoder:(unsigned)gen connected:(BOOL)c {
+ if(gen!=_decoderGen)return;
+ if(c){[self setConnected:YES];return;}
+ // fin de flux : on attend un peu avant d'afficher l'accueil (une relance est peut-être en cours)
+ __weak typeof(self) w=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  typeof(self) s=w;if(s&&gen==s->_decoderGen)[s setConnected:NO];
+ });
+}
+- (void)showNotice:(NSString*)title text:(NSString*)text code:(NSString*)code ok:(BOOL)ok {
+ [_notice hide];
+ _notice=[[MPNoticeView alloc] initWithTitle:title text:text code:code ok:ok];
+ [_notice showIn:self.view autoHide:code?120:6];
 }
 
 #pragma mark Contrôle (canal avec le PC)
@@ -856,6 +1141,10 @@ static const int MPQualities[3]={6,12,20};
  [super viewDidLayoutSubviews];
  [CATransaction begin];[CATransaction setDisableActions:YES];_video.frame=self.view.bounds;[CATransaction commit];
 }
+- (void)enqueue:(CMSampleBufferRef)sb gen:(unsigned)gen {
+ if(gen!=_decoderGen)return;   // image d'un flux précédent
+ [self enqueue:sb];
+}
 - (void)enqueue:(CMSampleBufferRef)sb {
  if(_video.status==AVQueuedSampleBufferRenderingStatusFailed){NSLog(@"MirrorPad: décodeur en erreur %@",_video.error);[_video flush];}
  [_video enqueueSampleBuffer:sb];
@@ -899,5 +1188,6 @@ static const int MPQualities[3]={6,12,20};
 @end
 
 int main(int argc,char **argv){@autoreleasepool{
+ signal(SIGPIPE,SIG_IGN);
  return UIApplicationMain(argc,argv,nil,NSStringFromClass(MPAppDelegate.class));
 }}

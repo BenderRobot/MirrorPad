@@ -4,14 +4,15 @@
 Crée un moniteur virtuel à droite des écrans existants (xrandr --setmonitor), le capture avec
 ffmpeg (x11grab), l'envoie à l'app MirrorPad de l'iPad et rejoue les gestes avec xdotool.
 
-Prérequis : sudo apt install ffmpeg xdotool x11-xserver-utils
+Prérequis : sudo apt install ffmpeg xdotool x11-xserver-utils openssl zenity
+Connexion chiffrée (TLS) ; appairage au premier lancement (même code sur le PC et l'iPad).
 Usage     : python3 mirrorpad-sender.py [--ipad 192.168.1.130] [--fps 60] [--mbps 12]
 Wayland n'est pas pris en charge (ouvrir une session « GNOME sur Xorg » / X11).
 """
-import argparse, json, os, select, signal, socket, subprocess, sys, threading, time, urllib.parse
+import argparse, hashlib, hmac, json, os, secrets, select, signal, socket, ssl, subprocess, sys, threading, time, urllib.parse
 from pathlib import Path
 
-VIDEO_PORT, INPUT_PORT, MONITOR = 7270, 7271, 'MirrorPad'
+PORT, MONITOR = 7272, 'MirrorPad'   # canal chiffré unique (image + tactile + contrôle)
 CONFIG = Path.home() / '.config' / 'mirrorpad' / 'config.json'
 ENCODER_NAMES = {'vaapi': 'VA-API (carte graphique)', 'x264': 'Processeur (x264)'}
 
@@ -26,7 +27,8 @@ def run(*args):
 
 # --- Configuration -------------------------------------------------------------------
 def load_config(args):
-    cfg = {'ipad': '', 'fps': 30, 'mbps': 12, 'encoder': 'auto', 'detected': '', 'width': 2048, 'height': 1536}
+    cfg = {'ipad': '', 'fps': 30, 'mbps': 12, 'encoder': 'auto', 'detected': '', 'width': 2048, 'height': 1536,
+           'pcid': secrets.token_hex(16), 'paired': {}}
     try:
         cfg.update(json.loads(CONFIG.read_text()))
     except Exception:
@@ -113,6 +115,119 @@ class VirtualMonitor:
         return True
 
 
+# --- Identité chiffrée du PC (certificat auto-signé créé une fois avec openssl) ---------------
+CERT, KEY = CONFIG.parent / 'pc-cert.pem', CONFIG.parent / 'pc-key.pem'
+
+
+def identity():
+    if not CERT.exists() or not KEY.exists():
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        r = run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '10950', '-subj',
+                '/CN=MirrorPad ' + socket.gethostname(), '-keyout', str(KEY), '-out', str(CERT))
+        if r.returncode:
+            sys.exit('openssl est nécessaire pour créer le certificat : sudo apt install openssl')
+        os.chmod(KEY, 0o600)
+        log('nouveau certificat du PC créé')
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(str(CERT), str(KEY))
+    der = ssl.PEM_cert_to_DER_cert(CERT.read_text())
+    return ctx, der
+
+
+def ask_pairing(name, code):
+    text = f"« {name} » demande à se connecter à ce PC.\n\nVérifiez que l'iPad affiche ce code : {code[:3]} {code[3:]}\n\nAccepter ?"
+    if os.environ.get('DISPLAY') and run('which', 'zenity').stdout:
+        return run('zenity', '--question', '--title=MirrorPad – Appairage', '--width=420', '--text=' + text).returncode == 0
+    if sys.stdin.isatty():
+        return input(text + ' [o/N] ').strip().lower() in ('o', 'oui', 'y', 'yes')
+    log('appairage refusé : aucune fenêtre ni terminal pour confirmer (installez zenity)')
+    return False
+
+
+# --- Session chiffrée (port 7272) : le PC se connecte et joue le rôle de serveur TLS ------------
+#   trames [type][longueur 3 octets][données] : 1 = ligne de contrôle, 2 = vidéo
+class Session:
+    def __init__(self, cfg, ctx, der):
+        self.cfg, self.ctx, self.der = cfg, ctx, der
+        self.lock, self.closed, self.name = threading.Lock(), False, ''
+        raw = socket.create_connection((cfg['ipad'], PORT), timeout=3)
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock = ctx.wrap_socket(raw, server_side=True)
+        self.sock.settimeout(15)
+
+    def frame(self, t, data):
+        if self.closed:
+            return
+        try:
+            with self.lock:
+                self.sock.sendall(bytes([t, len(data) >> 16 & 255, len(data) >> 8 & 255, len(data) & 255]) + data)
+        except OSError:
+            self.close()
+
+    def send(self, line):
+        self.frame(1, line.encode())
+
+    def read_exact(self, n):
+        b = b''
+        while len(b) < n:
+            c = self.sock.recv(n - len(b))
+            if not c:
+                raise ConnectionError('connexion fermée')
+            b += c
+        return b
+
+    def read_frame(self):
+        h = self.read_exact(4)
+        n = h[1] << 16 | h[2] << 8 | h[3]
+        return h[0], self.read_exact(n) if n else b''
+
+    def handshake(self):
+        self.send(f"HELLO 2 {self.cfg['pcid']} {urllib.parse.quote(socket.gethostname())}")
+        while True:
+            t, d = self.read_frame()
+            if t != 1:
+                continue
+            p = d.decode(errors='replace').split(' ')
+            paired = self.cfg.setdefault('paired', {})
+            if p[0] == 'AUTH' and len(p) >= 3:
+                dev = paired.get(p[1])
+                if dev and hmac.compare_digest(dev['token'], p[2]):
+                    self.name = dev['name']
+                    self.send('OK')
+                    log('iPad authentifié : ' + self.name)
+                    return True
+                self.send('ERR AUTH')
+                return False
+            if p[0] == 'PAIR' and len(p) >= 4:
+                nonce = bytes.fromhex(p[3])
+                h = hashlib.sha256(self.der + nonce).digest()
+                code = '%06d' % (int.from_bytes(h[:4], 'big') % 1000000)
+                name = urllib.parse.unquote(p[2])
+                log(f'demande d\'appairage : {name}, code {code}')
+                if not ask_pairing(name, code):
+                    self.send('ERR REFUSED')
+                    return False
+                token = secrets.token_hex(32)
+                paired[p[1]] = {'name': name, 'token': token, 'added': time.strftime('%Y-%m-%d %H:%M')}
+                save_config(self.cfg)
+                self.name = name
+                self.send('PAIRED ' + token)
+                log('iPad appairé : ' + name)
+                return True
+            if p[0] == 'ERR':
+                log("l'iPad refuse la connexion : " + ' '.join(p))
+                return False
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+
 # --- Encodage / flux vidéo ----------------------------------------------------------------
 class Streamer:
     def __init__(self, cfg, mon):
@@ -147,36 +262,36 @@ class Streamer:
             log('encodeur retenu : ' + ENCODER_NAMES[found])
         return self.cfg['detected']
 
-    def start(self):
+    def run(self, session):
+        """Lance ffmpeg et envoie la vidéo dans la session jusqu'à l'arrêt de l'un ou de l'autre."""
         self.encoder = self.pick_encoder()
         pre, enc = self.encoder_args(self.encoder)
-        url = f"tcp://{self.cfg['ipad']}:{VIDEO_PORT}?tcp_nodelay=1"
         cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', *pre, *self.input_args(self.cfg['fps']), *enc,
-               '-f', 'flv', '-flvflags', 'no_duration_filesize', '-flush_packets', '1', url]
-        self.proc = subprocess.Popen(cmd)
-        return self.proc
+               '-f', 'flv', '-flvflags', 'no_duration_filesize', '-flush_packets', '1', 'pipe:1']
+        session.send(f"C {self.cfg['fps']} {self.cfg['mbps']} {urllib.parse.quote(ENCODER_NAMES.get(self.encoder, '-'))}")
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        session.send('V NEW')
+        try:
+            while not session.closed:
+                data = self.proc.stdout.read1(65536)
+                if not data:
+                    break
+                session.frame(2, data)
+        finally:
+            self.restart()
+            if not session.closed:
+                session.send('V END')
 
     def restart(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+        p = self.proc
+        if p and p.poll() is None:
+            p.terminate()
 
 
-# --- Canal tactile / contrôle ------------------------------------------------------------
-class Control(threading.Thread):
+# --- Gestes et commandes reçus de l'iPad ------------------------------------------------------
+class Input:
     def __init__(self, cfg, mon, streamer):
-        super().__init__(daemon=True)
-        self.cfg, self.mon, self.streamer = cfg, mon, streamer
-        self.sock, self.wheel = None, 0
-
-    def send(self, line):
-        try:
-            self.sock.sendall((line + '\n').encode())
-        except Exception:
-            pass
-
-    def send_config(self):
-        name = ENCODER_NAMES.get(self.streamer.encoder, '-')
-        self.send(f"C {self.cfg['fps']} {self.cfg['mbps']} {urllib.parse.quote(name)}")
+        self.cfg, self.mon, self.streamer, self.wheel, self.session = cfg, mon, streamer, 0, None
 
     def xy(self, p):
         return str(int(self.mon.x + float(p[1]) * (self.mon.w - 1))), str(int(float(p[2]) * (self.mon.h - 1)))
@@ -201,8 +316,8 @@ class Control(threading.Thread):
             run('xdotool', 'type', '--delay', '0', '--', urllib.parse.unquote(p[1]))
         elif k == 'K':
             run('xdotool', 'key', {'BACK': 'BackSpace', 'ENTER': 'Return'}.get(p[1], 'BackSpace'))
-        elif k == 'P':
-            self.send(line)
+        elif k == 'P' and self.session:
+            self.session.send(line)
         elif k == 'O':
             if self.mon.set_portrait(p[1] == 'P'):
                 self.streamer.restart()
@@ -212,38 +327,16 @@ class Control(threading.Thread):
             log(f"qualité demandée par l'iPad : {p[1]} i/s, {p[2]} Mb/s")
             self.streamer.restart()
 
-    def run(self):
-        while True:
-            ip = self.cfg.get('ipad')
-            if not ip:
-                time.sleep(2)
-                continue
-            try:
-                self.sock = socket.create_connection((ip, INPUT_PORT), timeout=3)
-                self.sock.settimeout(None)
-                self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                log('canal tactile connecté')
-                self.send('N ' + socket.gethostname())
-                self.send_config()
-                buf = b''
-                while True:
-                    data = self.sock.recv(4096)
-                    if not data:
-                        break
-                    buf += data
-                    *lines, buf = buf.split(b'\n')
-                    lines = [l.decode(errors='replace') for l in lines if l]
-                    for i, l in enumerate(lines):
-                        if l.startswith('M') and i + 1 < len(lines) and lines[i + 1].startswith('M'):
-                            continue  # on ne rejoue que le dernier déplacement d'une rafale
-                        self.handle(l)
-            except OSError:
-                pass
-            finally:
-                if self.sock:
-                    self.sock.close()
-                run('xdotool', 'mouseup', '1')
-            time.sleep(2)
+    def read_loop(self, session):
+        try:
+            while not session.closed:
+                t, d = session.read_frame()
+                if t == 1:
+                    self.handle(d.decode(errors='replace'))
+        except (OSError, ConnectionError, ValueError):
+            pass
+        session.close()
+        run('xdotool', 'mouseup', '1')
 
 
 # --- Boucle principale ------------------------------------------------------------------
@@ -259,10 +352,12 @@ def main():
             sys.exit(f'{tool} est introuvable : sudo apt install ffmpeg xdotool x11-xserver-utils')
 
     cfg = load_config(args)
+    save_config(cfg)
+    ctx, der = identity()
     mon = VirtualMonitor(cfg['width'], cfg['height'])
     mon.create()
     streamer = Streamer(cfg, mon)
-    ctrl = Control(cfg, mon, streamer)
+    inp = Input(cfg, mon, streamer)
 
     def stop(*_):
         streamer.restart()
@@ -272,14 +367,12 @@ def main():
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    ctrl.start()
     fails = 0
     while True:
         if not cfg['ipad'] or fails >= 2:
             ip = find_ipad()
-            if ip:
-                if ip != cfg['ipad']:
-                    log(f'iPad trouvé : {ip}')
+            if ip and ip != cfg['ipad']:
+                log(f'iPad trouvé : {ip}')
                 cfg['ipad'] = ip
                 save_config(cfg)
             fails = 0
@@ -287,12 +380,28 @@ def main():
                 log("iPad introuvable (app MirrorPad ouverte ?), nouvel essai…")
                 time.sleep(3)
                 continue
-        t0 = time.time()
-        proc = streamer.start()
-        ctrl.send_config()
-        proc.wait()
-        fails = fails + 1 if time.time() - t0 < 3 else 0
-        time.sleep(1 if fails == 0 else 3)
+        try:
+            session = Session(cfg, ctx, der)
+            if not session.handshake():
+                session.close()
+                time.sleep(5)
+                continue
+        except (OSError, ConnectionError, ValueError) as e:
+            fails += 1
+            if fails == 1:
+                log(f"connexion impossible à {cfg['ipad']} : {e}")
+            time.sleep(3)
+            continue
+        fails = 0
+        inp.session = session
+        threading.Thread(target=inp.read_loop, args=(session,), daemon=True).start()
+        session.send('N ' + socket.gethostname())
+        while not session.closed:
+            t0 = time.time()
+            streamer.run(session)
+            if time.time() - t0 < 3 and not session.closed:
+                time.sleep(3)
+        time.sleep(1)
 
 
 if __name__ == '__main__':

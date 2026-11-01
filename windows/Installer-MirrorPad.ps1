@@ -31,6 +31,7 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
   Where-Object { $_.CommandLine -like '*MirrorPad-App.ps1*' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 Get-Process ffmpeg -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process MirrorPad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force $dest | Out-Null
 Expand-Archive -Path $zip -DestinationPath $dest -Force
@@ -45,5 +46,5 @@ if ($Token) {
 }
 
 # Au lancement, l'app recrée ses raccourcis (menu Démarrer, démarrage) vers ce dossier.
-Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$(Join-Path $dest 'MirrorPad.vbs')`""
+Start-Process -FilePath (Join-Path $dest 'MirrorPad.exe')
 Write-Host "MirrorPad $($rel.tag_name) installé dans $dest et lancé." -ForegroundColor Green

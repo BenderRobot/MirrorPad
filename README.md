@@ -10,7 +10,7 @@ Windows : souris  ◄───────────────────�
 | Dossier | Contenu |
 |---|---|
 | `ipad/` | App iOS (`MirrorPad.m`), `build.py` (Theos sur SRVHOME), `deploy.py` (SSH vers l'iPad) |
-| `windows/` | App de la zone de notification (`MirrorPad-App.ps1` + `MirrorPad.vbs`), installeur |
+| `windows/` | App de la zone de notification en C# (`src/`, compilée en `MirrorPad.exe` par `build.sh`), installeur |
 | `srvhome/` | Ligne cron de rattrapage si l'iPad était éteint lors d'une release |
 | `.github/workflows/release.yml` | Chaîne de publication |
 
@@ -25,6 +25,16 @@ git add -A && git commit -m "ce qui change" && git push
 2. Une **release GitHub** est publiée avec `mirrorpad_<version>_iphoneos-arm.deb` et `MirrorPad-Windows.zip`.
 3. **L'app Windows** vérifie les releases toutes les 2 minutes, se met à jour et redémarre seule.
 
+## Sécurité
+
+Un seul port, **7272**, chiffré en **TLS 1.2**. Le PC se connecte à l'iPad mais joue le rôle de serveur TLS :
+- l'iPad n'accepte que les PC dont il a mémorisé l'empreinte du certificat (épinglage) ;
+- le PC n'accepte que les iPad appairés (jeton secret de 256 bits remis à l'appairage) ;
+- appairage : le même code à 6 chiffres (SHA-256 du certificat du PC + nonce de l'iPad) s'affiche sur les deux appareils, à confirmer sur le PC.
+
+Trames : `[type 1 octet][longueur 3 octets][données]` (1 = ligne de contrôle, 2 = vidéo FLV).
+Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR <idIPad> <nom> <nonce>` → `OK` / `PAIRED <jeton>` / `ERR …`.
+
 ## Gestes
 
 | Geste | Effet |
@@ -38,10 +48,10 @@ git add -A && git commit -m "ce qui change" && git push
 
 Tourner l'iPad bascule l'écran virtuel en portrait (1536×2048) ou paysage.
 
-## Canal de contrôle (port 7271)
+## Lignes de contrôle
 
 iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `T texte%encodé`, `K BACK`, `O P|L`, `P n`, `S fps mbps`
-PC → iPad : `P n` (latence), `N nom-du-pc`, `C fps mbps encodeur`
+PC → iPad : `P n` (latence), `N nom-du-pc`, `C fps mbps encodeur`, `V NEW` / `V END` (début / fin d'un flux vidéo)
 
 ## Installation Windows
 
