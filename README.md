@@ -27,9 +27,35 @@ git add -A && git commit -m "ce qui change" && git push
 
 ## Gestes
 
-1 doigt tapé = clic · 1 doigt glissé = glisser · 2 doigts tapés = clic droit · 2 doigts glissés = molette.
+| Geste | Effet |
+|---|---|
+| 1 doigt tapé / glissé | clic / glisser |
+| appui long | clic droit |
+| 2 doigts tapés / glissés | clic droit / molette (avec élan) |
+| pincer | zoom (Ctrl + molette) |
+| 3 doigts tapés | clavier de l'iPad (texte envoyé au PC) |
+| 4 doigts tapés | réglages (qualité, gestes, indicateur de performance, derniers PC) |
+
+Tourner l'iPad bascule l'écran virtuel en portrait (1536×2048) ou paysage.
+
+## Canal de contrôle (port 7271)
+
+iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `T texte%encodé`, `K BACK`, `O P|L`, `P n`, `S fps mbps`
+PC → iPad : `P n` (latence), `N nom-du-pc`, `C fps mbps encodeur`
 
 ## Installation Windows
 
 `powershell -ExecutionPolicy Bypass -File windows\Installer-MirrorPad.ps1` (ajouter `-Token github_pat_…` si le dépôt est privé).
 Réglages : `%APPDATA%\MirrorPad\config.json` · journaux : `ffmpeg.log`, `tactile.log` dans le même dossier.
+
+Mode portrait : lancer une fois `windows\Ajouter-Portrait.ps1` **en administrateur** (ajoute 1536×2048 au pilote d'écran virtuel).
+
+## Linux (Debian, session X11)
+
+```bash
+sudo apt install ffmpeg xdotool x11-xserver-utils
+python3 linux/mirrorpad-sender.py            # iPad détecté automatiquement
+cp linux/mirrorpad.desktop ~/.config/autostart/   # lancement à l'ouverture de session
+```
+Crée un moniteur virtuel 2048×1536 à droite des écrans (`xrandr --setmonitor`), encodage VA-API si disponible, sinon x264.
+Réglages : `~/.config/mirrorpad/config.json`. Wayland non pris en charge.

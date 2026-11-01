@@ -29,6 +29,26 @@ namespace MirrorPad {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
     public static string ForegroundTitle() { var sb = new System.Text.StringBuilder(256); GetWindowText(GetForegroundWindow(), sb, 256); return sb.ToString(); }
     public static void Press(ushort vk) { Real(vk, 0); Real(vk, KEYUP); }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DEVMODE {
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+      public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields;
+      public int dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+      public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+      public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+      public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr lParam);
+    // Change la définition d'un écran (ex. \\.\DISPLAY3) ; 0 = succès, -2 = définition non proposée par le pilote
+    public static int SetResolution(string dev, int w, int h) {
+      var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+      if (!EnumDisplaySettings(dev, -1, ref dm)) return -100;
+      dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;
+      return ChangeDisplaySettingsEx(dev, ref dm, IntPtr.Zero, 1, IntPtr.Zero);
+    }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScan(char c);
     [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
     // Vraie touche (code virtuel + code matériel) : reconnue par toutes les applis, WhatsApp compris
@@ -196,6 +216,7 @@ function Start-Stream {
   $psi.EnvironmentVariables['FFREPORT'] = "file=$($rep):level=16"
   $script:proc = [System.Diagnostics.Process]::Start($psi)
   $script:procStart = Get-Date
+  Send-Config
 }
 function Stop-Stream {
   if ($script:proc -and -not $script:proc.HasExited) { try { $script:proc.Kill() } catch {} }
@@ -293,9 +314,10 @@ function Write-TouchLog([string]$msg) {
 function Get-TouchBounds {
   $screens = [System.Windows.Forms.Screen]::AllScreens
   $s = $screens | Where-Object { $script:cfg.TouchScreen -and $_.DeviceName -eq $script:cfg.TouchScreen } | Select-Object -First 1
-  if (-not $s) { $s = $screens | Where-Object { $_.Bounds.Width -eq 2048 -and $_.Bounds.Height -eq 1536 } | Select-Object -First 1 }
+  if (-not $s) { $s = $screens | Where-Object { ($_.Bounds.Width -eq 2048 -and $_.Bounds.Height -eq 1536) -or ($_.Bounds.Width -eq 1536 -and $_.Bounds.Height -eq 2048) } | Select-Object -First 1 }
   if (-not $s) { $s = $screens | Where-Object { -not $_.Primary } | Select-Object -First 1 }
   if (-not $s) { $s = [System.Windows.Forms.Screen]::PrimaryScreen }
+  $script:touchDevice = if ($s.Primary) { '' } else { $s.DeviceName }   # on ne fait jamais pivoter l'écran principal
   $s.Bounds
 }
 function Release-Left {
@@ -308,6 +330,28 @@ function Close-Input {
   Release-Left
 }
 function Get-ForegroundTitle { $t = [MirrorPad.Native]::ForegroundTitle(); if ($t) { "« $t »" } else { '(aucune fenêtre active)' } }
+function Send-ToIPad([string]$line) {
+  if (-not $script:inStream) { return }
+  try { $b = [System.Text.Encoding]::UTF8.GetBytes("$line`n"); $script:inStream.Write($b, 0, $b.Length) } catch {}
+}
+function Send-Config {
+  $name = $EncoderNames[$script:activeEncoder]; if (-not $name) { $name = '-' }
+  Send-ToIPad "C $($script:cfg.Fps) $($script:cfg.Mbps) $([System.Uri]::EscapeDataString($name))"
+}
+function Set-Orientation([string]$want) {
+  $b = $script:touchBounds
+  $isPortrait = $b.Height -gt $b.Width
+  if ((($want -eq 'P') -eq $isPortrait) -or -not $script:touchDevice) { return }
+  $r = [MirrorPad.Native]::SetResolution($script:touchDevice, $b.Height, $b.Width)
+  if ($r -eq 0) {
+    Write-TouchLog "écran virtuel en $(if ($want -eq 'P') { 'portrait' } else { 'paysage' }) ($($b.Height)x$($b.Width))"
+    $script:touchBounds = Get-TouchBounds
+    Restart-IfRunning
+  } else {
+    Write-TouchLog "rotation impossible (code $r)"
+    if ($r -eq -2) { $notify.ShowBalloonTip(5000, 'MirrorPad', 'Mode portrait indisponible : lancez une fois Ajouter-Portrait.ps1 en administrateur.', 'Warning') }
+  }
+}
 function Invoke-TouchLine([string]$line) {
   $p = $line.Trim().Split(' ')
   if ($p.Count -ge 3) {
@@ -327,7 +371,15 @@ function Invoke-TouchLine([string]$line) {
         [MirrorPad.Native]::Failures = 0
         [MirrorPad.Native]::Text([System.Uri]::UnescapeDataString($p[1]))
         if ([MirrorPad.Native]::Failures) { Write-TouchLog "frappe refusée par Windows ($([MirrorPad.Native]::Failures) touches, erreur $([MirrorPad.Native]::LastError), taille INPUT $([MirrorPad.Native]::InputSize))" }
-        else { Write-TouchLog "frappe envoyée à : $(Get-ForegroundTitle)" }
+      }
+    }
+    'O' { Set-Orientation $p[1] }
+    'P' { Send-ToIPad "P $($p[1])" }
+    'S' {
+      if ($p.Count -ge 3) {
+        $script:cfg.Fps = [int]$p[1]; $script:cfg.Mbps = [int]$p[2]; Save-Config
+        Write-TouchLog "qualité demandée par l'iPad : $($p[1]) i/s, $($p[2]) Mb/s"
+        Restart-IfRunning
       }
     }
     'K' { switch ($p[1]) { 'BACK' { [MirrorPad.Native]::Press(0x08) } 'ENTER' { [MirrorPad.Native]::Press(0x0D) } } }
@@ -347,6 +399,7 @@ $fast.Add_Tick({
           $script:inStream = $script:inClient.GetStream(); $script:inTask = $null; $script:inBuf = ''
           $b = $script:touchBounds
           Write-TouchLog "canal tactile connecté ; écran cible $($b.Left),$($b.Top) $($b.Width)x$($b.Height)"
+          Send-ToIPad "N $env:COMPUTERNAME"; Send-Config
         }
       }
       return
@@ -372,7 +425,7 @@ $fast.Add_Tick({
       for ($i = 0; $i -lt $last; $i++) {
         # on ne rejoue que le dernier déplacement d'une rafale
         if ($lines[$i].StartsWith('M') -and ($i + 1) -lt $last -and $lines[$i + 1].StartsWith('M')) { continue }
-        if ($lines[$i]) { if (-not $lines[$i].StartsWith('M')) { Write-TouchLog "reçu : $($lines[$i])" }; Invoke-TouchLine $lines[$i] }
+        if ($lines[$i]) { if ($lines[$i] -match '^O ') { Write-TouchLog "reçu : $($lines[$i])" }; Invoke-TouchLine $lines[$i] }
       }
     }
   } catch { Write-TouchLog "erreur : $($_.Exception.Message)"; Close-Input }

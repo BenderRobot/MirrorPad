@@ -49,11 +49,14 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 @property(nonatomic,copy) void (^onSample)(CMSampleBufferRef sample);
 @property(nonatomic,copy) void (^onSize)(CGSize size);
 - (void)start;
+- (void)takeBytes:(uint64_t*)bytes frames:(uint64_t*)frames; // compteurs depuis le dernier appel
 @end
 @implementation MPReceiver {
  CMVideoFormatDescriptionRef _format;
  uint8_t *_buf;size_t _cap;
+ volatile uint64_t _bytes,_frames;
 }
+- (void)takeBytes:(uint64_t*)bytes frames:(uint64_t*)frames {*bytes=_bytes;*frames=_frames;_bytes=0;_frames=0;}
 - (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
 - (void)serve {
  int srv=-1;
@@ -89,6 +92,7 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
   if(size>(16u<<20))return;
   if(size>_cap){uint8_t *n=realloc(_buf,size);if(!n)return;_buf=n;_cap=size;}
   if(size&&!MPReadFully(fd,_buf,size))return;
+  _bytes+=size+15;
   if((h[0]&0x1f)!=9||size<6||(_buf[0]&0x0f)!=7)continue;
   if(_buf[1]==0)[self setAvcC:_buf+5 length:size-5];
   else if(_buf[1]==1&&_format)[self emit:_buf+5 length:size-5];
@@ -124,6 +128,7 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  CFArrayRef att=CMSampleBufferGetSampleAttachmentsArray(sb,YES);
  if(att&&CFArrayGetCount(att)>0)
   CFDictionarySetValue((CFMutableDictionaryRef)CFArrayGetValueAtIndex(att,0),kCMSampleAttachmentKey_DisplayImmediately,kCFBooleanTrue);
+ _frames++;
  if(self.onSample)self.onSample(sb);
  CFRelease(sb);
 }
@@ -131,31 +136,61 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 
 #pragma mark - Tactile
 
-// Serveur du canal tactile : le PC s'y connecte ; on lui envoie des lignes
-//   "D x y" appui, "M x y" déplacement, "U x y" relâchement, "R x y" clic droit, "W n" molette
-// x et y sont normalisés (0..1) dans l'image du PC.
+// Canal tactile / contrôle (port 7271) : le PC s'y connecte.
+//   iPad -> PC : gestes ("D x y" "M" "U" "R" "W n" "Z n" "T texte" "K BACK"), "O P|L" orientation,
+//                "P n" mesure de latence, "S fps mbps" qualité demandée
+//   PC -> iPad : "P n" réponse de latence, "N nom" nom du PC, "C fps mbps encodeur" réglages actifs
 @interface MPInputServer : NSObject
+@property(nonatomic,copy) void (^onLine)(NSString *line);      // appelé sur le fil principal
+@property(nonatomic,copy) void (^onConnect)(NSString *peer);   // idem, avec l'adresse du PC
+@property(nonatomic,readonly) BOOL connected;
+@property(nonatomic,readonly,copy) NSString *peer;
 - (void)start;
 - (void)send:(NSString*)line;
 @end
-@implementation MPInputServer { int _client; }
+@implementation MPInputServer { int _client; unsigned _gen; }
 - (instancetype)init {if((self=[super init]))_client=-1;return self;}
+- (BOOL)connected {return _client>=0;}
 - (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
 - (void)serve {
  int srv=-1;
  for(;;){
   if(srv<0){srv=MPListen(MP_INPUT_PORT);if(srv<0){sleep(1);continue;}}
-  int c=accept(srv,NULL,NULL);
+  struct sockaddr_in from;socklen_t len=sizeof from;
+  int c=accept(srv,(struct sockaddr*)&from,&len);
   if(c<0){if(errno!=EINTR){close(srv);srv=-1;sleep(1);}continue;}
   int one=1;
   setsockopt(c,IPPROTO_TCP,TCP_NODELAY,&one,sizeof one);
   setsockopt(c,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof one);
+  char ip[INET_ADDRSTRLEN]="";inet_ntop(AF_INET,&from.sin_addr,ip,sizeof ip);
+  NSString *peer=@(ip);
   dispatch_async(dispatch_get_main_queue(),^{
    if(self->_client>=0)close(self->_client);
-   self->_client=c;
-   NSLog(@"MirrorPad: canal tactile connecté");
+   self->_client=c;unsigned gen=++self->_gen;self->_peer=peer;
+   NSLog(@"MirrorPad: canal tactile connecté (%@)",peer);
+   if(self.onConnect)self.onConnect(peer);
+   [NSThread detachNewThreadWithBlock:^{[self readFrom:c gen:gen];}];
   });
  }
+}
+- (void)readFrom:(int)c gen:(unsigned)gen {
+ NSMutableData *buf=[NSMutableData data];char tmp[2048];
+ for(;;){
+  ssize_t r=recv(c,tmp,sizeof tmp,0);
+  if(r<=0)break;
+  [buf appendBytes:tmp length:(NSUInteger)r];
+  for(;;){
+   const char *bytes=buf.bytes;const char *nl=memchr(bytes,'\n',buf.length);
+   if(!nl)break;
+   NSUInteger n=(NSUInteger)(nl-bytes);
+   NSString *line=[[NSString alloc] initWithBytes:bytes length:n encoding:NSUTF8StringEncoding];
+   [buf replaceBytesInRange:NSMakeRange(0,n+1) withBytes:NULL length:0];
+   if(line.length)dispatch_async(dispatch_get_main_queue(),^{if(self.onLine)self.onLine(line);});
+  }
+ }
+ dispatch_async(dispatch_get_main_queue(),^{
+  if(self->_gen==gen&&self->_client>=0){close(self->_client);self->_client=-1;}
+ });
 }
 - (void)send:(NSString*)line {
  if(_client<0)return;
@@ -171,6 +206,8 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 @interface MPTouchView : UIView<UIKeyInput>
 @property(nonatomic,copy) void (^emit)(NSString *line);
 @property(nonatomic) CGSize videoSize;
+@property(nonatomic) BOOL longPressEnabled,inertiaEnabled;
+@property(nonatomic,copy) void (^onFourFingerTap)(void);
 @end
 @implementation MPTouchView {
  int _mode;                 // 0 rien, 1 un doigt, 2 deux doigts, 3 trois doigts
@@ -182,7 +219,7 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  CADisplayLink *_inertia;
 }
 - (instancetype)initWithFrame:(CGRect)f {
- if((self=[super initWithFrame:f])){self.multipleTouchEnabled=YES;self.backgroundColor=UIColor.clearColor;}
+ if((self=[super initWithFrame:f])){self.multipleTouchEnabled=YES;self.backgroundColor=UIColor.clearColor;_longPressEnabled=YES;_inertiaEnabled=YES;}
  return self;
 }
 - (void)out:(NSString*)line {if(self.emit)self.emit(line);}
@@ -252,10 +289,11 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  if(a.count>=3){
   [self cancelLongPress];
   if(_mode==1&&_dragging)[self send:'U' at:_last];
-  _mode=3;_moved=NO;_centroidStart=[self centroid:a];_dragging=NO;
+  if(_mode!=3&&_mode!=4)_moved=NO;
+  _mode=a.count>=4?4:3;_centroidStart=[self centroid:a];_dragging=NO;
  } else if(_mode==0&&a.count==1){
   _mode=1;_dragging=NO;_longFired=NO;_primary=a[0];_start=_last=[a[0] locationInView:self];
-  [self performSelector:@selector(longPress) withObject:nil afterDelay:.55];
+  if(_longPressEnabled)[self performSelector:@selector(longPress) withObject:nil afterDelay:.55];
  } else if(a.count==2&&_mode!=3&&!(_mode==1&&(_dragging||_longFired))){
   [self cancelLongPress];
   _mode=2;_moved=NO;_decided=NO;_pinching=NO;_velocity=0;
@@ -289,7 +327,7 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
    [self scrollBy:dy];
   }
   _centroid=c;
- } else if(_mode==3&&a.count>=3){
+ } else if((_mode==3||_mode==4)&&a.count>=3){
   CGPoint c=[self centroid:a];
   if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>20)_moved=YES;
  }
@@ -302,10 +340,12 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
   else if(!cancelled&&!_longFired){[self send:'D' at:_start];[self send:'U' at:_start];}
  } else if(_mode==2&&!cancelled){
   if(!_moved)[self send:'R' at:_centroid];
-  else if(!_pinching&&fabs(_velocity)>300&&e.timestamp-_lastMoveTime<.08){
+  else if(_inertiaEnabled&&!_pinching&&fabs(_velocity)>300&&e.timestamp-_lastMoveTime<.08){
    _inertia=[CADisplayLink displayLinkWithTarget:self selector:@selector(inertiaTick:)];
    [_inertia addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
   }
+ } else if(_mode==4&&!_moved&&!cancelled){
+  if(self.onFourFingerTap)self.onFourFingerTap();
  } else if(_mode==3&&!_moved&&!cancelled){
   [self ripple:_centroidStart color:UIColor.whiteColor];
   if(self.isFirstResponder)[self resignFirstResponder];else [self becomeFirstResponder];
@@ -355,9 +395,11 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 // Écran affiché tant que le PC n'envoie pas d'image : reprend la DA de l'icône
 // (dégradé cyan → bleu → violet, courbe lumineuse, verre dépoli).
 @interface MPHomeView : UIView
-@property(nonatomic,readonly) UILabel *addressLabel;
+@property(nonatomic,readonly) UILabel *addressLabel,*lastPCLabel;
+@property(nonatomic,readonly) UIButton *settingsButton;
 @end
 @implementation MPHomeView {
+ UIStackView *_main;
  CAGradientLayer *_bg,*_orbA,*_orbB,*_cardShine;
  CAShapeLayer *_wave1,*_wave2;
  UIView *_logoWrap,*_dotView,*_card;
@@ -436,10 +478,28 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  text.axis=UILayoutConstraintAxisVertical;text.alignment=UIStackViewAlignmentLeading;text.spacing=12;
  [text setCustomSpacing:2 afterView:eyebrow];[text setCustomSpacing:22 afterView:subtitle];[text setCustomSpacing:26 afterView:pill];
 
+ _lastPCLabel=MPLabel(@" ",15,UIFontWeightMedium,.85,.2);
+ _lastPCLabel.hidden=YES;
+ [text addArrangedSubview:_lastPCLabel];
+ [text setCustomSpacing:14 afterView:_card];
+
  UIStackView *main=[[UIStackView alloc] initWithArrangedSubviews:@[_logoWrap,text]];
  main.axis=UILayoutConstraintAxisHorizontal;main.alignment=UIStackViewAlignmentCenter;main.spacing=64;
  main.translatesAutoresizingMaskIntoConstraints=NO;
+ _main=main;
  [self addSubview:main];
+
+ // Bouton « Réglages » (verre) en haut à droite
+ _settingsButton=[UIButton buttonWithType:UIButtonTypeSystem];
+ _settingsButton.translatesAutoresizingMaskIntoConstraints=NO;
+ [_settingsButton setTitle:@"Réglages" forState:UIControlStateNormal];
+ [_settingsButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ _settingsButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+ _settingsButton.backgroundColor=[UIColor colorWithWhite:1 alpha:.16];
+ _settingsButton.layer.cornerRadius=20;_settingsButton.layer.borderWidth=1;
+ _settingsButton.layer.borderColor=[UIColor colorWithWhite:1 alpha:.32].CGColor;
+ _settingsButton.contentEdgeInsets=UIEdgeInsetsMake(9,20,9,20);
+ [self addSubview:_settingsButton];
 
  // Pied de page
  UILabel *gestures=MPLabel(@"1 doigt : clic   ·   glisser : sélectionner   ·   2 doigts : clic droit et défilement",14,UIFontWeightMedium,.72,.3);
@@ -464,12 +524,16 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
   [main.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[main.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-18],
   [gestures.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[gestures.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
   [version.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[version.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
+  [_settingsButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[_settingsButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:28],
  ]];
  return self;
 }
 - (void)layoutSubviews {
  [super layoutSubviews];
  CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+ // paysage : logo à gauche du texte ; portrait : logo au-dessus
+ UILayoutConstraintAxis axis=h>w?UILayoutConstraintAxisVertical:UILayoutConstraintAxisHorizontal;
+ if(_main.axis!=axis){_main.axis=axis;_main.spacing=h>w?40:64;}
  [CATransaction begin];[CATransaction setDisableActions:YES];
  _bg.frame=self.bounds;
  _orbA.frame=CGRectMake(-w*.18,-h*.35,w*.75,w*.75);
@@ -504,6 +568,153 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 }
 @end
 
+#pragma mark - Réglages et indicateur
+
+static NSUserDefaults *MPDefaults(void){
+ NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+ [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12}];
+ return d;
+}
+static NSString *MPAgo(NSDate *date){
+ NSTimeInterval t=-date.timeIntervalSinceNow;
+ if(t<90)return @"à l'instant";
+ if(t<3600)return [NSString stringWithFormat:@"il y a %d min",(int)(t/60)];
+ if(t<86400)return [NSString stringWithFormat:@"il y a %d h",(int)(t/3600)];
+ return [NSString stringWithFormat:@"il y a %d j",(int)(t/86400)];
+}
+
+// Panneau « verre » ouvert par le bouton Réglages ou un tap à quatre doigts.
+@interface MPSettingsPanel : UIView
+@property(nonatomic,copy) void (^onQuality)(int fps,int mbps);
+@property(nonatomic,copy) void (^onChange)(void);
+- (void)showIn:(UIView*)parent;
+@end
+@implementation MPSettingsPanel {
+ UISegmentedControl *_fps,*_quality;
+ UISwitch *_longPress,*_inertia,*_hud;
+ UIStackView *_history;
+}
+static const int MPQualities[3]={6,12,20};
+- (UILabel*)section:(NSString*)t {UILabel *l=MPLabel(t,12,UIFontWeightSemibold,.6,2);return l;}
+- (UIView*)row:(NSString*)title control:(UIView*)c {
+ UILabel *l=MPLabel(title,17,UIFontWeightMedium,1,0);
+ UIStackView *r=[[UIStackView alloc] initWithArrangedSubviews:@[l,c]];
+ r.axis=UILayoutConstraintAxisHorizontal;r.alignment=UIStackViewAlignmentCenter;r.distribution=UIStackViewDistributionEqualSpacing;
+ return r;
+}
+- (UISegmentedControl*)segments:(NSArray*)items {
+ UISegmentedControl *sc=[[UISegmentedControl alloc] initWithItems:items];
+ sc.tintColor=UIColor.whiteColor;
+ [sc addTarget:self action:@selector(qualityChanged) forControlEvents:UIControlEventValueChanged];
+ return sc;
+}
+- (UISwitch*)toggle {
+ UISwitch *sw=[UISwitch new];sw.onTintColor=MPRGB(0x4A6BFF,1);
+ [sw addTarget:self action:@selector(togglesChanged) forControlEvents:UIControlEventValueChanged];
+ return sw;
+}
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ self.backgroundColor=[UIColor colorWithRed:.02 green:.03 blue:.12 alpha:.55];
+ [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(backgroundTap:)]];
+
+ UIVisualEffectView *card=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+ card.translatesAutoresizingMaskIntoConstraints=NO;card.layer.cornerRadius=28;card.clipsToBounds=YES;
+ card.layer.borderWidth=1;card.layer.borderColor=[UIColor colorWithWhite:1 alpha:.22].CGColor;
+ [self addSubview:card];
+ CAGradientLayer *tint=[CAGradientLayer layer];
+ tint.colors=@[(id)MPRGB(0x16C6FF,.30).CGColor,(id)MPRGB(0x3B5BFF,.25).CGColor,(id)MPRGB(0x7A2EF6,.32).CGColor];
+ tint.startPoint=CGPointMake(0,0);tint.endPoint=CGPointMake(1,1);tint.frame=CGRectMake(0,0,560,900);
+ [card.contentView.layer addSublayer:tint];
+
+ UILabel *title=MPLabel(@"Réglages",28,UIFontWeightBold,1,-.4);
+ UIButton *close=[UIButton buttonWithType:UIButtonTypeSystem];
+ [close setTitle:@"Fermer" forState:UIControlStateNormal];[close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ close.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+ [close addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+ UIStackView *head=[[UIStackView alloc] initWithArrangedSubviews:@[title,close]];
+ head.distribution=UIStackViewDistributionEqualSpacing;head.alignment=UIStackViewAlignmentCenter;
+
+ _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
+ _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
+ _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];
+ UILabel *note=MPLabel(@"La qualité est appliquée au PC dès qu'il est connecté.",13,UIFontWeightRegular,.6,0);
+ _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
+
+ UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:@[head,
+   [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
+   [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
+   [self section:@"AFFICHAGE"],[self row:@"Indicateur de performance" control:_hud],
+   [self section:@"DERNIERS PC"],_history]];
+ st.axis=UILayoutConstraintAxisVertical;st.spacing=12;st.translatesAutoresizingMaskIntoConstraints=NO;
+ [st setCustomSpacing:22 afterView:head];
+ for(UIView *v in st.arrangedSubviews)if([v isKindOfClass:UILabel.class]&&((UILabel*)v).font.pointSize==12)[st setCustomSpacing:8 afterView:v];
+ [card.contentView addSubview:st];
+ [NSLayoutConstraint activateConstraints:@[
+  [card.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[card.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+  [card.widthAnchor constraintEqualToConstant:520],
+  [st.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:26],[st.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-26],
+  [st.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:30],[st.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-30],
+ ]];
+ return self;
+}
+- (void)backgroundTap:(UITapGestureRecognizer*)g {
+ UIView *hit=[self hitTest:[g locationInView:self] withEvent:nil];
+ if(hit==self)[self hide];
+}
+- (void)load {
+ NSUserDefaults *d=MPDefaults();
+ _fps.selectedSegmentIndex=[d integerForKey:@"fps"]>=60?1:0;
+ NSInteger m=[d integerForKey:@"mbps"];_quality.selectedSegmentIndex=m<=8?0:(m<=15?1:2);
+ _longPress.on=[d boolForKey:@"longPress"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
+ for(UIView *v in _history.arrangedSubviews){[_history removeArrangedSubview:v];[v removeFromSuperview];}
+ NSArray *h=[d arrayForKey:@"history"];
+ if(!h.count)[_history addArrangedSubview:MPLabel(@"Aucun PC pour l'instant.",15,UIFontWeightRegular,.6,0)];
+ for(NSDictionary *e in h)
+  [_history addArrangedSubview:MPLabel([NSString stringWithFormat:@"%@  ·  %@  ·  %@",e[@"name"],e[@"ip"],MPAgo(e[@"date"])],15,UIFontWeightRegular,.85,0)];
+}
+- (void)qualityChanged {
+ int fps=_fps.selectedSegmentIndex==1?60:30,mbps=MPQualities[MAX(0,_quality.selectedSegmentIndex)];
+ NSUserDefaults *d=MPDefaults();[d setInteger:fps forKey:@"fps"];[d setInteger:mbps forKey:@"mbps"];
+ if(self.onQuality)self.onQuality(fps,mbps);
+}
+- (void)togglesChanged {
+ NSUserDefaults *d=MPDefaults();
+ [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
+ if(self.onChange)self.onChange();
+}
+- (void)showIn:(UIView*)parent {
+ [self load];
+ self.frame=parent.bounds;self.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ self.alpha=0;self.transform=CGAffineTransformMakeScale(1.03,1.03);
+ [parent addSubview:self];
+ [UIView animateWithDuration:.3 animations:^{self.alpha=1;self.transform=CGAffineTransformIdentity;}];
+}
+- (void)hide {
+ [UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];
+}
+@end
+
+// Petit bandeau en haut à droite : images/s, débit, définition, encodeur, latence réseau
+@interface MPHud : UIView
+@property(nonatomic,readonly) UILabel *label;
+@end
+@implementation MPHud
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ self.backgroundColor=[UIColor colorWithRed:.03 green:.04 blue:.14 alpha:.72];
+ self.layer.cornerRadius=14;self.layer.borderWidth=1;self.layer.borderColor=[UIColor colorWithWhite:1 alpha:.18].CGColor;
+ self.userInteractionEnabled=NO;
+ _label=[UILabel new];_label.translatesAutoresizingMaskIntoConstraints=NO;
+ _label.font=[UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightMedium];_label.textColor=UIColor.whiteColor;
+ [self addSubview:_label];
+ [NSLayoutConstraint activateConstraints:@[
+  [_label.topAnchor constraintEqualToAnchor:self.topAnchor constant:7],[_label.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-7],
+  [_label.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14],[_label.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14]]];
+ return self;
+}
+@end
+
 #pragma mark - Interface
 
 @interface MPViewController : UIViewController
@@ -515,7 +726,12 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  MPInputServer *_input;
  MPTouchView *_touch;
  NSNetService *_bonjour;
- NSTimer *_timer;
+ NSTimer *_timer,*_statsTimer;
+ MPHud *_hud;
+ CGSize _streamSize;
+ NSString *_encoderName;
+ double _rttMs;
+ BOOL _streaming;
 }
 - (UILabel*)label:(NSString*)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor*)c {
  UILabel *l=[UILabel new];l.text=t;l.font=[UIFont systemFontOfSize:s weight:w];l.textColor=c;l.numberOfLines=0;l.textAlignment=NSTextAlignmentCenter;return l;
@@ -532,25 +748,109 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _touch=[[MPTouchView alloc] initWithFrame:self.view.bounds];
  _touch.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
  __weak MPInputServer *weakInput=_input;
+ __weak typeof(self) w=self;
  _touch.emit=^(NSString *line){[weakInput send:line];};
+ _touch.onFourFingerTap=^{[w showSettings];};
  [self.view addSubview:_touch];
+
+ _hud=[MPHud new];_hud.translatesAutoresizingMaskIntoConstraints=NO;_hud.hidden=YES;
+ [self.view addSubview:_hud];
+ [NSLayoutConstraint activateConstraints:@[
+  [_hud.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:14],[_hud.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-14]]];
 
  _home=[[MPHomeView alloc] initWithFrame:self.view.bounds];
  _home.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
- _home.userInteractionEnabled=NO; // l'écran d'accueil laisse passer les touchers
+ [_home.settingsButton addTarget:self action:@selector(showSettings) forControlEvents:UIControlEventTouchUpInside];
  [self.view addSubview:_home];
 
- __weak typeof(self) w=self;
+ _input.onConnect=^(NSString *peer){(void)peer;[w controlConnected];};
+ _input.onLine=^(NSString *line){[w controlLine:line];};
+ [self applyPreferences];
+ [self refreshLastPC];
  _receiver=[MPReceiver new];
  _receiver.onState=^(BOOL c){dispatch_async(dispatch_get_main_queue(),^{[w setConnected:c];});};
  __weak MPTouchView *weakTouch=_touch;
- _receiver.onSize=^(CGSize sz){dispatch_async(dispatch_get_main_queue(),^{weakTouch.videoSize=sz;});};
+ _receiver.onSize=^(CGSize sz){dispatch_async(dispatch_get_main_queue(),^{weakTouch.videoSize=sz;[w setStreamSize:sz];});};
  _receiver.onSample=^(CMSampleBufferRef sb){CFRetain(sb);dispatch_async(dispatch_get_main_queue(),^{[w enqueue:sb];CFRelease(sb);});};
  [_receiver start];
  [self refreshAddress];
  [self publishBonjour];
  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(publishBonjour) name:UIApplicationWillEnterForegroundNotification object:nil];
  _timer=[NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t){(void)t;[w refreshAddress];}];
+ _statsTimer=[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t){(void)t;[w statsTick];}];
+}
+
+#pragma mark Contrôle (canal avec le PC)
+- (NSString*)orientationLine:(CGSize)size {return size.height>size.width?@"O P\n":@"O L\n";}
+- (void)controlConnected {
+ [_input send:[self orientationLine:self.view.bounds.size]];
+ NSUserDefaults *d=MPDefaults();
+ if([d boolForKey:@"qualityPending"]){
+  [_input send:[NSString stringWithFormat:@"S %ld %ld\n",(long)[d integerForKey:@"fps"],(long)[d integerForKey:@"mbps"]]];
+  [d setBool:NO forKey:@"qualityPending"];
+ }
+}
+- (void)controlLine:(NSString*)line {
+ NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
+ NSString *k=p.firstObject;
+ if([k isEqualToString:@"P"]&&p.count>=2){
+  _rttMs=CACurrentMediaTime()*1000-p[1].doubleValue;
+ } else if([k isEqualToString:@"N"]&&p.count>=2){
+  [self rememberPC:[[p subarrayWithRange:NSMakeRange(1,p.count-1)] componentsJoinedByString:@" "] ip:_input.peer];
+ } else if([k isEqualToString:@"C"]&&p.count>=4){
+  NSUserDefaults *d=MPDefaults();
+  if(![d boolForKey:@"qualityPending"]){[d setInteger:p[1].integerValue forKey:@"fps"];[d setInteger:p[2].integerValue forKey:@"mbps"];}
+  _encoderName=[p[3] stringByRemovingPercentEncoding];
+ }
+}
+- (void)rememberPC:(NSString*)name ip:(NSString*)ip {
+ if(!name.length)return;
+ NSUserDefaults *d=MPDefaults();
+ NSMutableArray *h=[NSMutableArray array];
+ [h addObject:@{@"name":name,@"ip":ip?:@"?",@"date":[NSDate date]}];
+ for(NSDictionary *e in [d arrayForKey:@"history"])if(![e[@"name"] isEqual:name]&&h.count<5)[h addObject:e];
+ [d setObject:h forKey:@"history"];
+ [self refreshLastPC];
+}
+- (void)refreshLastPC {
+ NSDictionary *e=[[MPDefaults() arrayForKey:@"history"] firstObject];
+ _home.lastPCLabel.hidden=!e;
+ if(e)_home.lastPCLabel.text=[NSString stringWithFormat:@"Dernier PC : %@ (%@), %@",e[@"name"],e[@"ip"],MPAgo(e[@"date"])];
+}
+- (void)applyPreferences {
+ NSUserDefaults *d=MPDefaults();
+ _touch.longPressEnabled=[d boolForKey:@"longPress"];
+ _touch.inertiaEnabled=[d boolForKey:@"inertia"];
+ _hud.hidden=![d boolForKey:@"hud"]||!_streaming;
+}
+- (void)showSettings {
+ if(_touch.isFirstResponder)[_touch resignFirstResponder];
+ MPSettingsPanel *panel=[MPSettingsPanel new];
+ __weak typeof(self) w=self;
+ panel.onChange=^{[w applyPreferences];};
+ panel.onQuality=^(int fps,int mbps){[w requestQualityFps:fps mbps:mbps];};
+ [panel showIn:self.view];
+}
+- (void)requestQualityFps:(int)fps mbps:(int)mbps {
+ if(_input.connected)[_input send:[NSString stringWithFormat:@"S %d %d\n",fps,mbps]];
+ else [MPDefaults() setBool:YES forKey:@"qualityPending"];
+}
+- (void)setStreamSize:(CGSize)sz {_streamSize=sz;}
+- (void)statsTick {
+ uint64_t bytes=0,frames=0;[_receiver takeBytes:&bytes frames:&frames];
+ if(_input.connected)[_input send:[NSString stringWithFormat:@"P %.0f\n",CACurrentMediaTime()*1000]];
+ if(_hud.hidden)return;
+ NSMutableArray *parts=[NSMutableArray arrayWithObjects:
+  [NSString stringWithFormat:@"%llu i/s",frames],
+  [[NSString stringWithFormat:@"%.1f Mb/s",bytes*8/1e6] stringByReplacingOccurrencesOfString:@"." withString:@","],nil];
+ if(_streamSize.width>0)[parts addObject:[NSString stringWithFormat:@"%.0f×%.0f",_streamSize.width,_streamSize.height]];
+ if(_encoderName.length)[parts addObject:_encoderName];
+ if(_rttMs>0)[parts addObject:[NSString stringWithFormat:@"réseau %.0f ms",_rttMs/2]];
+ _hud.label.text=[parts componentsJoinedByString:@"  ·  "];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)c {
+ [super viewWillTransitionToSize:size withTransitionCoordinator:c];
+ [_input send:[self orientationLine:size]]; // le PC bascule l'écran virtuel en portrait / paysage
 }
 - (void)viewDidLayoutSubviews {
  [super viewDidLayoutSubviews];
@@ -561,6 +861,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  [_video enqueueSampleBuffer:sb];
 }
 - (void)setConnected:(BOOL)c {
+ _streaming=c;[self applyPreferences];
  MPHomeView *home=_home;
  if(c){
   [UIView animateWithDuration:.45 animations:^{home.alpha=0;home.transform=CGAffineTransformMakeScale(1.04,1.04);}
@@ -580,7 +881,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 - (void)refreshAddress {_home.addressLabel.text=MPLocalIP();}
 - (BOOL)prefersStatusBarHidden {return YES;}
 - (BOOL)prefersHomeIndicatorAutoHidden {return YES;}
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskLandscape;}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskAll;}
 @end
 
 @interface MPAppDelegate : UIResponder<UIApplicationDelegate>
