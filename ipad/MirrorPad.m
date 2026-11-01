@@ -279,11 +279,11 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _bg.colors=@[(id)MPRGB(0x16C6FF,1).CGColor,(id)MPRGB(0x3B5BFF,1).CGColor,(id)MPRGB(0x7A2EF6,1).CGColor];
  _bg.locations=@[@0,@0.52,@1];_bg.startPoint=CGPointMake(0,0);_bg.endPoint=CGPointMake(1,1);
  [self.layer addSublayer:_bg];
- _orbA=[CAGradientLayer layer];_orbA.type=kCAGradientLayerRadial;
+ _orbA=[CAGradientLayer layer];_orbA.type=@"radial";
  _orbA.colors=@[(id)MPRGB(0x7FE9FF,.55).CGColor,(id)MPRGB(0x7FE9FF,0).CGColor];
  _orbA.startPoint=CGPointMake(.5,.5);_orbA.endPoint=CGPointMake(1,1);
  [self.layer addSublayer:_orbA];
- _orbB=[CAGradientLayer layer];_orbB.type=kCAGradientLayerRadial;
+ _orbB=[CAGradientLayer layer];_orbB.type=@"radial";
  _orbB.colors=@[(id)MPRGB(0xD06BFF,.50).CGColor,(id)MPRGB(0xD06BFF,0).CGColor];
  _orbB.startPoint=CGPointMake(.5,.5);_orbB.endPoint=CGPointMake(1,1);
  [self.layer addSublayer:_orbB];
