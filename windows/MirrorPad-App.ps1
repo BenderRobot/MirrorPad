@@ -463,12 +463,16 @@ function Set-State([string]$s) {
   $tip = "MirrorPad – $($statusItem.Text)"
   if ($tip.Length -gt 63) { $tip = $tip.Substring(0, 63) }
   $notify.Text = $tip
-  if ($s -eq 'connected' -and $prev -ne 'connected') { $notify.ShowBalloonTip(2000, 'MirrorPad', "iPad connecté ($target)", 'Info') }
+  # notification seulement pour une vraie connexion (pas après une rotation ou un changement de qualité)
+  if ($prev -eq 'connected' -and $s -ne 'connected') { $script:lostAt = Get-Date }
+  if ($s -eq 'connected' -and $prev -ne 'connected' -and ($null -eq $script:lostAt -or ((Get-Date) - $script:lostAt).TotalSeconds -gt 15)) {
+    $notify.ShowBalloonTip(2000, 'MirrorPad', "iPad connecté ($target)", 'Info')
+  }
 }
 
 function Connect-IPad    { $script:wanted = $true;  $script:nextTry = [datetime]::MinValue; Set-State 'waiting' }
 function Disconnect-IPad { $script:wanted = $false; Stop-Stream; Set-State 'idle' }
-function Restart-IfRunning { if ($script:wanted) { Stop-Stream; $script:nextTry = [datetime]::MinValue; $script:state = ''; Set-State 'waiting' } }
+function Restart-IfRunning { if ($script:wanted) { Stop-Stream; $script:nextTry = [datetime]::MinValue; $script:lostAt = Get-Date; $script:state = ''; Set-State 'waiting' } }
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 1000
