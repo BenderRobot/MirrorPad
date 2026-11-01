@@ -1,4 +1,4 @@
-// MirrorPad 0.3 — reçoit un flux H.264 (conteneur FLV sur TCP) envoyé par le PC
+// MirrorPad — reçoit un flux H.264 (conteneur FLV sur TCP) envoyé par le PC
 // et l'affiche en plein écran. Décodage matériel via AVSampleBufferDisplayLayer (iOS 8+).
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -237,14 +237,186 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 - (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {(void)touches;[self finish:e cancelled:YES];}
 @end
 
+#pragma mark - Écran d'accueil
+
+static UIColor *MPRGB(unsigned hex,CGFloat a){
+ return [UIColor colorWithRed:((hex>>16)&255)/255.0 green:((hex>>8)&255)/255.0 blue:(hex&255)/255.0 alpha:a];
+}
+static UILabel *MPLabel(NSString *t,CGFloat size,UIFontWeight w,CGFloat alpha,CGFloat kern){
+ UILabel *l=[UILabel new];
+ UIFont *f=[UIFont systemFontOfSize:size weight:w];UIColor *c=[UIColor colorWithWhite:1 alpha:alpha];
+ l.font=f;l.textColor=c;
+ l.attributedText=[[NSAttributedString alloc] initWithString:t attributes:@{NSKernAttributeName:@(kern),NSFontAttributeName:f,NSForegroundColorAttributeName:c}];
+ l.numberOfLines=0;
+ return l;
+}
+static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
+ CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:key];
+ a.fromValue=from;a.toValue=to;a.duration=d;a.autoreverses=YES;a.repeatCount=HUGE_VALF;
+ a.timingFunction=[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+ a.removedOnCompletion=NO;
+ return a;
+}
+
+// Écran affiché tant que le PC n'envoie pas d'image : reprend la DA de l'icône
+// (dégradé cyan → bleu → violet, courbe lumineuse, verre dépoli).
+@interface MPHomeView : UIView
+@property(nonatomic,readonly) UILabel *addressLabel;
+@end
+@implementation MPHomeView {
+ CAGradientLayer *_bg,*_orbA,*_orbB,*_cardShine;
+ CAShapeLayer *_wave1,*_wave2;
+ UIView *_logoWrap,*_dotView,*_card;
+ CALayer *_halo;
+ BOOL _animated;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+ if(!(self=[super initWithFrame:frame]))return nil;
+ self.clipsToBounds=YES;
+
+ // Fond : dégradé de l'icône + halos lumineux + courbes
+ _bg=[CAGradientLayer layer];
+ _bg.colors=@[(id)MPRGB(0x16C6FF,1).CGColor,(id)MPRGB(0x3B5BFF,1).CGColor,(id)MPRGB(0x7A2EF6,1).CGColor];
+ _bg.locations=@[@0,@0.52,@1];_bg.startPoint=CGPointMake(0,0);_bg.endPoint=CGPointMake(1,1);
+ [self.layer addSublayer:_bg];
+ _orbA=[CAGradientLayer layer];_orbA.type=kCAGradientLayerRadial;
+ _orbA.colors=@[(id)MPRGB(0x7FE9FF,.55).CGColor,(id)MPRGB(0x7FE9FF,0).CGColor];
+ _orbA.startPoint=CGPointMake(.5,.5);_orbA.endPoint=CGPointMake(1,1);
+ [self.layer addSublayer:_orbA];
+ _orbB=[CAGradientLayer layer];_orbB.type=kCAGradientLayerRadial;
+ _orbB.colors=@[(id)MPRGB(0xD06BFF,.50).CGColor,(id)MPRGB(0xD06BFF,0).CGColor];
+ _orbB.startPoint=CGPointMake(.5,.5);_orbB.endPoint=CGPointMake(1,1);
+ [self.layer addSublayer:_orbB];
+ _wave1=[CAShapeLayer layer];_wave1.fillColor=[UIColor colorWithWhite:1 alpha:.07].CGColor;[self.layer addSublayer:_wave1];
+ _wave2=[CAShapeLayer layer];_wave2.fillColor=UIColor.clearColor.CGColor;_wave2.lineWidth=2;
+ _wave2.strokeColor=[UIColor colorWithWhite:1 alpha:.22].CGColor;[self.layer addSublayer:_wave2];
+
+ // Logo
+ _logoWrap=[UIView new];_logoWrap.translatesAutoresizingMaskIntoConstraints=NO;
+ _logoWrap.layer.shadowColor=MPRGB(0x1A0B5C,1).CGColor;_logoWrap.layer.shadowOpacity=.45;
+ _logoWrap.layer.shadowRadius=34;_logoWrap.layer.shadowOffset=CGSizeMake(0,22);
+ UIImageView *logo=[[UIImageView alloc] initWithImage:[UIImage imageNamed:@"Logo"]];
+ logo.translatesAutoresizingMaskIntoConstraints=NO;logo.contentMode=UIViewContentModeScaleAspectFill;
+ logo.layer.cornerRadius=48;logo.layer.masksToBounds=YES;
+ logo.layer.borderWidth=1.5;logo.layer.borderColor=[UIColor colorWithWhite:1 alpha:.45].CGColor;
+ [_logoWrap addSubview:logo];
+
+ // Textes
+ UILabel *eyebrow=MPLabel(@"ÉCRAN SUPPLÉMENTAIRE",13,UIFontWeightSemibold,.78,3);
+ UILabel *title=MPLabel(@"MirrorPad",64,UIFontWeightBold,1,-1.2);
+ UILabel *subtitle=MPLabel(@"Votre iPad, un écran de plus pour votre PC.",21,UIFontWeightRegular,.86,0);
+
+ // Pastille d'état avec point qui pulse
+ UIView *pill=[UIView new];pill.translatesAutoresizingMaskIntoConstraints=NO;
+ pill.backgroundColor=[UIColor colorWithWhite:1 alpha:.16];pill.layer.cornerRadius=19;
+ pill.layer.borderWidth=1;pill.layer.borderColor=[UIColor colorWithWhite:1 alpha:.30].CGColor;
+ _dotView=[UIView new];_dotView.translatesAutoresizingMaskIntoConstraints=NO;
+ _halo=[CALayer layer];_halo.frame=CGRectMake(0,0,10,10);_halo.cornerRadius=5;_halo.backgroundColor=MPRGB(0xFFC14D,1).CGColor;
+ CALayer *dot=[CALayer layer];dot.frame=CGRectMake(0,0,10,10);dot.cornerRadius=5;dot.backgroundColor=MPRGB(0xFFC14D,1).CGColor;
+ [_dotView.layer addSublayer:_halo];[_dotView.layer addSublayer:dot];
+ UILabel *state=MPLabel(@"En attente du PC…",17,UIFontWeightMedium,1,.2);state.translatesAutoresizingMaskIntoConstraints=NO;
+ [pill addSubview:_dotView];[pill addSubview:state];
+
+ // Carte « verre » avec l'adresse
+ _card=[UIView new];_card.translatesAutoresizingMaskIntoConstraints=NO;
+ _card.backgroundColor=[UIColor colorWithWhite:1 alpha:.13];_card.layer.cornerRadius=26;_card.clipsToBounds=YES;
+ _card.layer.borderWidth=1;_card.layer.borderColor=[UIColor colorWithWhite:1 alpha:.34].CGColor;
+ _cardShine=[CAGradientLayer layer];
+ _cardShine.colors=@[(id)[UIColor colorWithWhite:1 alpha:.20].CGColor,(id)[UIColor colorWithWhite:1 alpha:0].CGColor];
+ _cardShine.startPoint=CGPointMake(0,0);_cardShine.endPoint=CGPointMake(.6,1);
+ _cardShine.frame=CGRectMake(0,0,470,320); // la carte fait 470 de large ; le surplus est rogné
+ [_card.layer addSublayer:_cardShine];
+ UILabel *caption=MPLabel(@"ADRESSE DE CET IPAD",12,UIFontWeightSemibold,.72,2.4);
+ _addressLabel=[UILabel new];
+ _addressLabel.font=[UIFont monospacedDigitSystemFontOfSize:44 weight:UIFontWeightSemibold];
+ _addressLabel.textColor=UIColor.whiteColor;_addressLabel.adjustsFontSizeToFitWidth=YES;_addressLabel.minimumScaleFactor=.6;
+ UIView *sep=[UIView new];sep.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];
+ [sep.heightAnchor constraintEqualToConstant:1].active=YES;
+ UILabel *hint=MPLabel([NSString stringWithFormat:@"Port %d  ·  Ouvrez MirrorPad sur le PC, la connexion est automatique.",MP_PORT],15,UIFontWeightRegular,.80,0);
+ UIStackView *cardStack=[[UIStackView alloc] initWithArrangedSubviews:@[caption,_addressLabel,sep,hint]];
+ cardStack.axis=UILayoutConstraintAxisVertical;cardStack.spacing=10;cardStack.translatesAutoresizingMaskIntoConstraints=NO;
+ [cardStack setCustomSpacing:16 afterView:_addressLabel];
+ [_card addSubview:cardStack];
+
+ UIStackView *text=[[UIStackView alloc] initWithArrangedSubviews:@[eyebrow,title,subtitle,pill,_card]];
+ text.axis=UILayoutConstraintAxisVertical;text.alignment=UIStackViewAlignmentLeading;text.spacing=12;
+ [text setCustomSpacing:2 afterView:eyebrow];[text setCustomSpacing:22 afterView:subtitle];[text setCustomSpacing:26 afterView:pill];
+
+ UIStackView *main=[[UIStackView alloc] initWithArrangedSubviews:@[_logoWrap,text]];
+ main.axis=UILayoutConstraintAxisHorizontal;main.alignment=UIStackViewAlignmentCenter;main.spacing=64;
+ main.translatesAutoresizingMaskIntoConstraints=NO;
+ [self addSubview:main];
+
+ // Pied de page
+ UILabel *gestures=MPLabel(@"1 doigt : clic   ·   glisser : sélectionner   ·   2 doigts : clic droit et défilement",14,UIFontWeightMedium,.72,.3);
+ gestures.textAlignment=NSTextAlignmentCenter;gestures.translatesAutoresizingMaskIntoConstraints=NO;
+ [self addSubview:gestures];
+ NSString *v=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"";
+ UILabel *version=MPLabel([@"v" stringByAppendingString:v],13,UIFontWeightMedium,.5,.5);
+ version.translatesAutoresizingMaskIntoConstraints=NO;[self addSubview:version];
+
+ [NSLayoutConstraint activateConstraints:@[
+  [_logoWrap.widthAnchor constraintEqualToConstant:220],[_logoWrap.heightAnchor constraintEqualToConstant:220],
+  [logo.leadingAnchor constraintEqualToAnchor:_logoWrap.leadingAnchor],[logo.trailingAnchor constraintEqualToAnchor:_logoWrap.trailingAnchor],
+  [logo.topAnchor constraintEqualToAnchor:_logoWrap.topAnchor],[logo.bottomAnchor constraintEqualToAnchor:_logoWrap.bottomAnchor],
+  [pill.heightAnchor constraintEqualToConstant:38],
+  [_dotView.widthAnchor constraintEqualToConstant:10],[_dotView.heightAnchor constraintEqualToConstant:10],
+  [_dotView.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:16],[_dotView.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+  [state.leadingAnchor constraintEqualToAnchor:_dotView.trailingAnchor constant:10],[state.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+  [state.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-18],
+  [_card.widthAnchor constraintEqualToConstant:470],
+  [cardStack.topAnchor constraintEqualToAnchor:_card.topAnchor constant:24],[cardStack.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor constant:-24],
+  [cardStack.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:28],[cardStack.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:-28],
+  [main.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[main.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-18],
+  [gestures.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[gestures.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
+  [version.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[version.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
+ ]];
+ return self;
+}
+- (void)layoutSubviews {
+ [super layoutSubviews];
+ CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+ [CATransaction begin];[CATransaction setDisableActions:YES];
+ _bg.frame=self.bounds;
+ _orbA.frame=CGRectMake(-w*.18,-h*.35,w*.75,w*.75);
+ _orbB.frame=CGRectMake(w*.48,h*.30,w*.75,w*.75);
+ UIBezierPath *p=[UIBezierPath bezierPath];
+ [p moveToPoint:CGPointMake(0,h*.78)];
+ [p addCurveToPoint:CGPointMake(w,h*.30) controlPoint1:CGPointMake(w*.35,h*.98) controlPoint2:CGPointMake(w*.62,h*.30)];
+ [p addLineToPoint:CGPointMake(w,h)];[p addLineToPoint:CGPointMake(0,h)];[p closePath];
+ _wave1.path=p.CGPath;
+ UIBezierPath *l=[UIBezierPath bezierPath];
+ [l moveToPoint:CGPointMake(-20,h*.70)];
+ [l addCurveToPoint:CGPointMake(w+20,h*.20) controlPoint1:CGPointMake(w*.30,h*.95) controlPoint2:CGPointMake(w*.60,h*.18)];
+ _wave2.path=l.CGPath;
+ _logoWrap.layer.shadowPath=[UIBezierPath bezierPathWithRoundedRect:_logoWrap.bounds cornerRadius:48].CGPath;
+ [CATransaction commit];
+}
+- (void)didMoveToWindow {
+ [super didMoveToWindow];
+ if(!self.window||_animated)return;
+ _animated=YES;
+ [_logoWrap.layer addAnimation:MPLoop(@"transform.translation.y",@0,@-10,3.2) forKey:@"float"];
+ [_orbA addAnimation:MPLoop(@"transform.translation",[NSValue valueWithCGSize:CGSizeZero],[NSValue valueWithCGSize:CGSizeMake(70,50)],9) forKey:@"drift"];
+ [_orbB addAnimation:MPLoop(@"transform.translation",[NSValue valueWithCGSize:CGSizeZero],[NSValue valueWithCGSize:CGSizeMake(-80,-40)],11) forKey:@"drift"];
+ [_bg addAnimation:MPLoop(@"colors",_bg.colors,@[(id)MPRGB(0x22B4FF,1).CGColor,(id)MPRGB(0x4A4DFF,1).CGColor,(id)MPRGB(0x8A2BEF,1).CGColor],8) forKey:@"shift"];
+ [_wave2 addAnimation:MPLoop(@"opacity",@1,@.35,4) forKey:@"glow"];
+ CABasicAnimation *grow=[CABasicAnimation animationWithKeyPath:@"transform.scale"];grow.fromValue=@1;grow.toValue=@2.8;
+ CABasicAnimation *fade=[CABasicAnimation animationWithKeyPath:@"opacity"];fade.fromValue=@.85;fade.toValue=@0;
+ CAAnimationGroup *pulse=[CAAnimationGroup animation];pulse.animations=@[grow,fade];pulse.duration=1.6;
+ pulse.repeatCount=HUGE_VALF;pulse.removedOnCompletion=NO;
+ pulse.timingFunction=[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+ [_halo addAnimation:pulse forKey:@"pulse"];
+}
+@end
+
 #pragma mark - Interface
 
 @interface MPViewController : UIViewController
 @end
 @implementation MPViewController {
  AVSampleBufferDisplayLayer *_video;
- UIView *_waiting;
- UILabel *_address;
+ MPHomeView *_home;
  MPReceiver *_receiver;
  MPInputServer *_input;
  MPTouchView *_touch;
@@ -268,23 +440,10 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  _touch.emit=^(NSString *line){[weakInput send:line];};
  [self.view addSubview:_touch];
 
- _waiting=[UIView new];_waiting.translatesAutoresizingMaskIntoConstraints=NO;
- _waiting.backgroundColor=[UIColor colorWithRed:.035 green:.065 blue:.11 alpha:1];
- _waiting.userInteractionEnabled=NO; // l'écran d'attente laisse passer les touchers
- [self.view addSubview:_waiting];
- UIStackView *st=[UIStackView new];st.axis=UILayoutConstraintAxisVertical;st.spacing=18;st.alignment=UIStackViewAlignmentCenter;st.translatesAutoresizingMaskIntoConstraints=NO;
- [_waiting addSubview:st];
- UIColor *grey=[UIColor colorWithWhite:.68 alpha:1];
- [st addArrangedSubview:[self label:@"MirrorPad" size:48 weight:UIFontWeightBold color:UIColor.whiteColor]];
- [st addArrangedSubview:[self label:@"En attente du PC…" size:24 weight:UIFontWeightMedium color:[UIColor colorWithRed:1 green:.79 blue:.38 alpha:1]]];
- _address=[self label:@"" size:30 weight:UIFontWeightSemibold color:[UIColor colorWithRed:.4 green:.8 blue:1 alpha:1]];
- [st addArrangedSubview:_address];
- [st addArrangedSubview:[self label:@"Sur le PC, lancez MirrorPad-Sender.ps1 avec cette adresse." size:18 weight:UIFontWeightRegular color:grey]];
- [NSLayoutConstraint activateConstraints:@[
-  [_waiting.topAnchor constraintEqualToAnchor:self.view.topAnchor],[_waiting.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-  [_waiting.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],[_waiting.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-  [st.centerXAnchor constraintEqualToAnchor:_waiting.centerXAnchor],[st.centerYAnchor constraintEqualToAnchor:_waiting.centerYAnchor],
-  [st.widthAnchor constraintLessThanOrEqualToAnchor:_waiting.widthAnchor constant:-60]]];
+ _home=[[MPHomeView alloc] initWithFrame:self.view.bounds];
+ _home.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ _home.userInteractionEnabled=NO; // l'écran d'accueil laisse passer les touchers
+ [self.view addSubview:_home];
 
  __weak typeof(self) w=self;
  _receiver=[MPReceiver new];
@@ -304,8 +463,18 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  if(_video.status==AVQueuedSampleBufferRenderingStatusFailed){NSLog(@"MirrorPad: décodeur en erreur %@",_video.error);[_video flush];}
  [_video enqueueSampleBuffer:sb];
 }
-- (void)setConnected:(BOOL)c {_waiting.hidden=c;if(!c)[_video flushAndRemoveImage];}
-- (void)refreshAddress {_address.text=[NSString stringWithFormat:@"%@  ·  port %d",MPLocalIP(),MP_PORT];}
+- (void)setConnected:(BOOL)c {
+ MPHomeView *home=_home;
+ if(c){
+  [UIView animateWithDuration:.45 animations:^{home.alpha=0;home.transform=CGAffineTransformMakeScale(1.04,1.04);}
+                   completion:^(BOOL done){if(done&&home.alpha==0)home.hidden=YES;}];
+ } else {
+  [_video flushAndRemoveImage];
+  home.hidden=NO;
+  [UIView animateWithDuration:.45 animations:^{home.alpha=1;home.transform=CGAffineTransformIdentity;}];
+ }
+}
+- (void)refreshAddress {_home.addressLabel.text=MPLocalIP();}
 - (BOOL)prefersStatusBarHidden {return YES;}
 - (BOOL)prefersHomeIndicatorAutoHidden {return YES;}
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskLandscape;}

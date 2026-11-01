@@ -23,7 +23,7 @@ info = {
     'CFBundleIcons~ipad': {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon76x76']}},
 }
 (app / 'Info.plist').write_bytes(plistlib.dumps(info))
-for icon in p.glob('AppIcon*.png'):
+for icon in [*p.glob('AppIcon*.png'), *p.glob('Logo*.png')]:
     shutil.copy(icon, app / icon.name)
 ent = {'application-identifier': 'local.btv.mirrorpad', 'platform-application': True,
        'com.apple.private.security.no-container': True, 'com.apple.private.security.no-sandbox': True}
