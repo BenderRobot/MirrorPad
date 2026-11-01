@@ -23,13 +23,19 @@ $ConfigPath = Join-Path $AppDir 'config.json'
 $LogPath    = Join-Path $AppDir 'ffmpeg.log'
 $VbsPath    = Join-Path $PSScriptRoot 'MirrorPad.vbs'
 
-$defaults = [ordered]@{ IPad = '192.168.1.130'; Output = 1; Fps = 30; Mbps = 12; Encoder = 'x264'; Port = 7270; AutoConnect = $true; Touch = $true; InputPort = 7271; TouchScreen = ''; AutoUpdate = $true; UpdateRepo = 'BenderRobot/MirrorPad'; GitHubToken = '' }
+$defaults = [ordered]@{ IPad = '192.168.1.130'; Output = 1; Fps = 30; Mbps = 12; Encoder = 'auto'; DetectedEncoder = ''; AutoDiscover = $true; ConfigVersion = 2; Port = 7270; AutoConnect = $true; Touch = $true; InputPort = 7271; TouchScreen = ''; AutoUpdate = $true; UpdateRepo = 'BenderRobot/MirrorPad'; GitHubToken = '' }
 $script:cfg = [pscustomobject]$defaults
 if (Test-Path $ConfigPath) {
   try {
     $saved = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     foreach ($k in $defaults.Keys) { if ($null -ne $saved.$k) { $script:cfg.$k = $saved.$k } }
   } catch {}
+}
+# Migration des anciens réglages : encodeur et détection automatiques
+if ([int]$script:cfg.ConfigVersion -lt 2 -or $null -eq $saved.ConfigVersion) {
+  if ($script:cfg.Encoder -eq 'x264') { $script:cfg.Encoder = 'auto' }
+  $script:cfg.AutoDiscover = $true
+  $script:cfg.ConfigVersion = 2
 }
 function Save-Config { $script:cfg | ConvertTo-Json | Set-Content $ConfigPath -Encoding UTF8 }
 
@@ -44,18 +50,81 @@ if (-not $script:ffmpeg) {
   exit
 }
 
-function Get-FfmpegArgs {
+# Encodeurs, du plus efficace au plus universel. 'qsv' = Intel Quick Sync entièrement sur la puce graphique,
+# 'qsv-sys' = Quick Sync avec conversion des couleurs par le processeur (repli), 'nvenc' = NVIDIA, 'x264' = processeur.
+$EncoderNames = [ordered]@{ qsv = 'Intel Quick Sync'; 'qsv-sys' = 'Intel Quick Sync (compat.)'; nvenc = 'NVIDIA NVENC'; x264 = 'Processeur (x264)' }
+function Get-EncoderArgs([string]$e) {
   $c = $script:cfg
   $gop = [int]$c.Fps * 2
-  $buf = [math]::Max(1, [int]($c.Mbps / 4))
-  $src = "-hide_banner -loglevel error -f lavfi -i ddagrab=output_idx=$($c.Output):framerate=$($c.Fps)"
-  if ($c.Encoder -eq 'nvenc') {
-    $enc = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -bf 0 -rc cbr -profile:v high -g $gop -b:v $($c.Mbps)M"
-  } else {
-    $enc = "-vf hwdownload,format=bgra,format=yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -g $gop -b:v $($c.Mbps)M -maxrate $($c.Mbps)M -bufsize $($buf)M"
+  $rate = "-b:v $($c.Mbps)M -maxrate $($c.Mbps)M -bufsize $([math]::Max(1, [int]($c.Mbps / 4)))M"
+  $qsv = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -profile:v high -g $gop $rate"
+  switch ($e) {
+    'qsv'     { "-vf hwmap=derive_device=qsv,format=qsv,vpp_qsv=format=nv12 $qsv" }
+    'qsv-sys' { "-vf hwdownload,format=bgra,format=nv12 $qsv" }
+    'nvenc'   { "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -bf 0 -rc cbr -profile:v high -g $gop -b:v $($c.Mbps)M" }
+    default   { "-vf hwdownload,format=bgra,format=yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -g $gop $rate" }
   }
-  "$src $enc -f flv -flvflags no_duration_filesize -flush_packets 1 tcp://$($c.IPad):$($c.Port)?tcp_nodelay=1"
 }
+function Get-ActiveEncoder {
+  if ($script:cfg.Encoder -ne 'auto') { return $script:cfg.Encoder }
+  if (-not $script:cfg.DetectedEncoder) {
+    # essai réel de chaque encodeur sur 10 images : on garde le premier qui fonctionne
+    $notify.ShowBalloonTip(2000, 'MirrorPad', 'Recherche du meilleur encodeur vidéo…', 'Info')
+    $found = 'x264'
+    foreach ($e in @('qsv', 'qsv-sys', 'nvenc')) {
+      $a = "-hide_banner -loglevel quiet -f lavfi -i ddagrab=output_idx=$($script:cfg.Output):framerate=30 -frames:v 10 $(Get-EncoderArgs $e) -f null -"
+      $p = Start-Process -FilePath $script:ffmpeg -ArgumentList $a -WindowStyle Hidden -PassThru -Wait
+      if ($p.ExitCode -eq 0) { $found = $e; break }
+    }
+    $script:cfg.DetectedEncoder = $found
+    Save-Config
+  }
+  $script:cfg.DetectedEncoder
+}
+function Get-FfmpegArgs {
+  $c = $script:cfg
+  $script:activeEncoder = Get-ActiveEncoder
+  $src = "-hide_banner -loglevel error -f lavfi -i ddagrab=output_idx=$($c.Output):framerate=$($c.Fps)"
+  "$src $(Get-EncoderArgs $script:activeEncoder) -f flv -flvflags no_duration_filesize -flush_packets 1 tcp://$($c.IPad):$($c.Port)?tcp_nodelay=1"
+}
+
+# Détection de l'iPad : requête mDNS (Bonjour) « _mirrorpad._tcp.local » envoyée sur chaque carte réseau ;
+# l'adresse de celui qui répond est celle de l'iPad.
+function Find-IPad {
+  $q = New-Object System.Collections.Generic.List[byte]
+  $q.AddRange([byte[]](0,0, 0,0, 0,1, 0,0, 0,0, 0,0))
+  foreach ($label in '_mirrorpad', '_tcp', 'local') { $q.Add([byte]$label.Length); $q.AddRange([System.Text.Encoding]::ASCII.GetBytes($label)) }
+  $q.AddRange([byte[]](0, 0,12, 0x80,1))   # type PTR, classe IN + réponse directe demandée
+  $packet = $q.ToArray()
+  $group = New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Parse('224.0.0.251')), 5353
+  $socks = @()
+  foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+    if ($ni.OperationalStatus -ne 'Up' -or $ni.NetworkInterfaceType -eq 'Loopback') { continue }
+    foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
+      if ($ua.Address.AddressFamily -ne 'InterNetwork') { continue }
+      try {
+        $u = New-Object System.Net.Sockets.UdpClient (New-Object System.Net.IPEndPoint $ua.Address, 0)
+        [void]$u.Send($packet, $packet.Length, $group); $socks += $u
+      } catch {}
+    }
+  }
+  $found = $null
+  $deadline = (Get-Date).AddMilliseconds(1500)
+  while (-not $found -and (Get-Date) -lt $deadline) {
+    foreach ($u in $socks) {
+      if ($u.Available -gt 0) {
+        $from = New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Any), 0
+        $data = $u.Receive([ref]$from)
+        if ([System.Text.Encoding]::ASCII.GetString($data) -match '_mirrorpad') { $found = $from.Address.ToString(); break }
+      }
+    }
+    Start-Sleep -Milliseconds 40
+  }
+  foreach ($u in $socks) { $u.Close() }
+  $found
+}
+$script:fails = 0
+$script:activeEncoder = '' 
 
 $script:proc = $null
 $script:procStart = [datetime]::MinValue
@@ -271,7 +340,7 @@ function Set-State([string]$s) {
   switch ($s) {
     'idle'      { $notify.Icon = $icons.idle;      $statusItem.Text = 'Arrêté';                $toggleItem.Text = 'Connecter l''iPad' }
     'waiting'   { $notify.Icon = $icons.waiting;   $statusItem.Text = "Recherche de l'iPad…";  $toggleItem.Text = 'Déconnecter' }
-    'connected' { $notify.Icon = $icons.connected; $statusItem.Text = "Connecté ($target)";    $toggleItem.Text = 'Déconnecter' }
+    'connected' { $notify.Icon = $icons.connected; $statusItem.Text = "Connecté ($target · $($EncoderNames[$script:activeEncoder]))";    $toggleItem.Text = 'Déconnecter' }
   }
   $tip = "MirrorPad – $($statusItem.Text)"
   if ($tip.Length -gt 63) { $tip = $tip.Substring(0, 63) }
@@ -296,8 +365,18 @@ $timer.Add_Tick({
     if (($now - $script:procStart).TotalSeconds -ge 3) { Set-State 'connected' }
     return
   }
-  if ($script:proc) { $script:proc = $null; $script:nextTry = $now.AddSeconds(3); Set-State 'waiting' }
+  if ($script:proc) {
+    if (($now - $script:procStart).TotalSeconds -lt 3) { $script:fails++ } else { $script:fails = 0 }
+    $script:proc = $null; $script:nextTry = $now.AddSeconds(3); Set-State 'waiting'
+  }
   if ($now -ge $script:nextTry) {
+    # adresse inconnue ou plusieurs échecs : on recherche l'iPad sur le réseau
+    if ($script:cfg.AutoDiscover -and (-not $script:cfg.IPad -or $script:fails -ge 2)) {
+      $ip = Find-IPad
+      if ($ip -and $ip -ne $script:cfg.IPad) { $script:cfg.IPad = $ip; Save-Config; Close-Input }
+      $script:fails = 0
+      if (-not $script:cfg.IPad) { $script:nextTry = $now.AddSeconds(5); return }
+    }
     try { Start-Stream } catch { $script:nextTry = $now.AddSeconds(10); $notify.ShowBalloonTip(3000, 'MirrorPad', "ffmpeg n'a pas pu démarrer : $($_.Exception.Message)", 'Error') }
   }
 })
@@ -341,7 +420,7 @@ function Find-Screens {
 function Show-Settings {
   $f = New-Object System.Windows.Forms.Form
   $f.Text = 'MirrorPad – Paramètres'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
-  $f.StartPosition = 'CenterScreen'; $f.ClientSize = New-Object System.Drawing.Size(360, 250); $f.TopMost = $true
+  $f.StartPosition = 'CenterScreen'; $f.ClientSize = New-Object System.Drawing.Size(380, 290); $f.TopMost = $true
   $f.Font = New-Object System.Drawing.Font('Segoe UI', 10)
   $y = 16
   function Add-Row($label, $ctrl) {
@@ -350,25 +429,33 @@ function Show-Settings {
     $f.Controls.Add($l); $f.Controls.Add($ctrl); $script:rowY += 36
   }
   $script:rowY = 16
+  $disc = New-Object System.Windows.Forms.CheckBox; $disc.Text = 'Trouver l''iPad automatiquement'; $disc.Checked = [bool]$script:cfg.AutoDiscover; $disc.Location = New-Object System.Drawing.Point(16, $script:rowY); $disc.AutoSize = $true; $f.Controls.Add($disc); $script:rowY += 32
   $ip = New-Object System.Windows.Forms.TextBox; $ip.Text = $script:cfg.IPad; Add-Row 'Adresse de l''iPad' $ip
   $out = New-Object System.Windows.Forms.NumericUpDown; $out.Minimum = 0; $out.Maximum = 9; $out.Value = [int]$script:cfg.Output; Add-Row 'Numéro d''écran' $out
   $fps = New-Object System.Windows.Forms.ComboBox; $fps.DropDownStyle = 'DropDownList'; [void]$fps.Items.AddRange(@('30', '60')); $fps.SelectedItem = "$($script:cfg.Fps)"; if ($fps.SelectedIndex -lt 0) { $fps.SelectedIndex = 0 }; Add-Row 'Images / seconde' $fps
   $mb = New-Object System.Windows.Forms.NumericUpDown; $mb.Minimum = 2; $mb.Maximum = 50; $mb.Value = [int]$script:cfg.Mbps; Add-Row 'Débit (Mb/s)' $mb
-  $enc = New-Object System.Windows.Forms.ComboBox; $enc.DropDownStyle = 'DropDownList'; [void]$enc.Items.AddRange(@('x264 (processeur)', 'nvenc (carte NVIDIA)')); $enc.SelectedIndex = [int]($script:cfg.Encoder -eq 'nvenc'); Add-Row 'Encodage' $enc
+  $encKeys = @('auto') + @($EncoderNames.Keys)
+  $enc = New-Object System.Windows.Forms.ComboBox; $enc.DropDownStyle = 'DropDownList'
+  $autoLabel = 'Automatique'; if ($script:cfg.DetectedEncoder) { $autoLabel += " ($($EncoderNames[$script:cfg.DetectedEncoder]))" }
+  [void]$enc.Items.Add($autoLabel); foreach ($k in $EncoderNames.Keys) { [void]$enc.Items.Add($EncoderNames[$k]) }
+  $enc.SelectedIndex = [math]::Max(0, [array]::IndexOf($encKeys, [string]$script:cfg.Encoder)); Add-Row 'Encodage' $enc
   $auto = New-Object System.Windows.Forms.CheckBox; $auto.Text = 'Se connecter au lancement'; $auto.Checked = [bool]$script:cfg.AutoConnect; $auto.Location = New-Object System.Drawing.Point(16, $script:rowY); $auto.AutoSize = $true; $f.Controls.Add($auto)
-  $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Enregistrer'; $ok.DialogResult = 'OK'; $ok.Location = New-Object System.Drawing.Point(150, 212); $ok.Width = 100
-  $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Annuler'; $cancel.DialogResult = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(258, 212); $cancel.Width = 86
+  $ok = New-Object System.Windows.Forms.Button; $ok.Text = 'Enregistrer'; $ok.DialogResult = 'OK'; $ok.Location = New-Object System.Drawing.Point(170, 250); $ok.Width = 100
+  $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Annuler'; $cancel.DialogResult = 'Cancel'; $cancel.Location = New-Object System.Drawing.Point(278, 250); $cancel.Width = 86
   $f.Controls.Add($ok); $f.Controls.Add($cancel); $f.AcceptButton = $ok; $f.CancelButton = $cancel
   if ($f.ShowDialog() -eq 'OK') {
     $addr = $null
-    if (-not [System.Net.IPAddress]::TryParse($ip.Text.Trim(), [ref]$addr)) {
+    if (($ip.Text.Trim() -or -not $disc.Checked) -and -not [System.Net.IPAddress]::TryParse($ip.Text.Trim(), [ref]$addr)) {
       [System.Windows.Forms.MessageBox]::Show('Adresse IP invalide.', 'MirrorPad') | Out-Null; return
     }
+    $script:cfg.AutoDiscover = $disc.Checked
     $script:cfg.IPad = $ip.Text.Trim()
     $script:cfg.Output = [int]$out.Value
     $script:cfg.Fps = [int]$fps.SelectedItem
     $script:cfg.Mbps = [int]$mb.Value
-    $script:cfg.Encoder = @('x264', 'nvenc')[$enc.SelectedIndex]
+    $newEnc = $encKeys[$enc.SelectedIndex]
+    $script:cfg.DetectedEncoder = ''   # la détection de l'encodeur est refaite à la prochaine connexion
+    $script:cfg.Encoder = $newEnc
     $script:cfg.AutoConnect = $auto.Checked
     Save-Config
     Restart-IfRunning

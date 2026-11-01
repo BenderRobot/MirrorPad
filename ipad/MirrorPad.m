@@ -420,6 +420,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  MPReceiver *_receiver;
  MPInputServer *_input;
  MPTouchView *_touch;
+ NSNetService *_bonjour;
  NSTimer *_timer;
 }
 - (UILabel*)label:(NSString*)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor*)c {
@@ -453,6 +454,8 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _receiver.onSample=^(CMSampleBufferRef sb){CFRetain(sb);dispatch_async(dispatch_get_main_queue(),^{[w enqueue:sb];CFRelease(sb);});};
  [_receiver start];
  [self refreshAddress];
+ [self publishBonjour];
+ [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(publishBonjour) name:UIApplicationWillEnterForegroundNotification object:nil];
  _timer=[NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t){(void)t;[w refreshAddress];}];
 }
 - (void)viewDidLayoutSubviews {
@@ -473,6 +476,12 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
   home.hidden=NO;
   [UIView animateWithDuration:.45 animations:^{home.alpha=1;home.transform=CGAffineTransformIdentity;}];
  }
+}
+// Annonce Bonjour « _mirrorpad._tcp » : le PC retrouve l'iPad sans connaître son adresse IP.
+- (void)publishBonjour {
+ [_bonjour stop];
+ _bonjour=[[NSNetService alloc] initWithDomain:@"local." type:@"_mirrorpad._tcp." name:UIDevice.currentDevice.name port:MP_PORT];
+ [_bonjour publish];
 }
 - (void)refreshAddress {_home.addressLabel.text=MPLocalIP();}
 - (BOOL)prefersStatusBarHidden {return YES;}
