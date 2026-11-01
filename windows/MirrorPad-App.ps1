@@ -14,21 +14,41 @@ namespace MirrorPad {
     [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr extra; }
     [StructLayout(LayoutKind.Explicit)] struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION u; }
-    [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+    // Diagnostic : nombre de frappes refusées par Windows et dernier code d'erreur
+    public static int Failures = 0, LastError = 0;
+    public static int InputSize { get { return Marshal.SizeOf(typeof(INPUT)); } }
 
     const uint KEYUP = 2, UNICODE = 4;
     static void Key(ushort vk, ushort scan, uint flags) {
       var i = new INPUT[1];
       i[0].type = 1; i[0].u.ki.wVk = vk; i[0].u.ki.wScan = scan; i[0].u.ki.dwFlags = flags;
-      SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
+      if (SendInput(1, i, Marshal.SizeOf(typeof(INPUT))) != 1) { Failures++; LastError = Marshal.GetLastWin32Error(); }
     }
-    public static void Press(ushort vk) { Key(vk, 0, 0); Key(vk, 0, KEYUP); }
-    // Tape un texte quelconque (accents, émojis…) ; retour à la ligne = Entrée, tabulation = Tab
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+    public static string ForegroundTitle() { var sb = new System.Text.StringBuilder(256); GetWindowText(GetForegroundWindow(), sb, 256); return sb.ToString(); }
+    public static void Press(ushort vk) { Real(vk, 0); Real(vk, KEYUP); }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScan(char c);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
+    // Vraie touche (code virtuel + code matériel) : reconnue par toutes les applis, WhatsApp compris
+    static void Real(ushort vk, uint flags) { Key(vk, (ushort)MapVirtualKey(vk, 0), flags); }
+    // Tape un texte : chaque caractère passe par la touche correspondante du clavier actuel (AZERTY…),
+    // avec Maj / AltGr si nécessaire ; les caractères absents du clavier (émojis…) passent en Unicode.
     public static void Text(string s) {
       foreach (char c in s) {
-        if (c == '\n' || c == '\r') Press(0x0D);
-        else if (c == '\t') Press(0x09);
-        else { Key(0, c, UNICODE); Key(0, c, UNICODE | KEYUP); }
+        if (c == '\n' || c == '\r') { Real(0x0D, 0); Real(0x0D, KEYUP); continue; }
+        if (c == '\t') { Real(0x09, 0); Real(0x09, KEYUP); continue; }
+        short r = VkKeyScan(c);
+        if (r == -1 || (r & 0xFF) == 0xFF) { Key(0, c, UNICODE); Key(0, c, UNICODE | KEYUP); continue; }
+        ushort vk = (ushort)(r & 0xFF); int mods = (r >> 8) & 0xFF;
+        if ((mods & 1) != 0) Real(0x10, 0);       // Maj
+        if ((mods & 2) != 0) Real(0x11, 0);       // Ctrl  (Ctrl + Alt = AltGr)
+        if ((mods & 4) != 0) Real(0x12, 0);       // Alt
+        Real(vk, 0); Real(vk, KEYUP);
+        if ((mods & 4) != 0) Real(0x12, KEYUP);
+        if ((mods & 2) != 0) Real(0x11, KEYUP);
+        if ((mods & 1) != 0) Real(0x10, KEYUP);
       }
     }
     // Zoom : Ctrl maintenu + molette
@@ -287,6 +307,7 @@ function Close-Input {
   $script:inNext = (Get-Date).AddSeconds(2)
   Release-Left
 }
+function Get-ForegroundTitle { $t = [MirrorPad.Native]::ForegroundTitle(); if ($t) { "« $t »" } else { '(aucune fenêtre active)' } }
 function Invoke-TouchLine([string]$line) {
   $p = $line.Trim().Split(' ')
   if ($p.Count -ge 3) {
@@ -301,7 +322,14 @@ function Invoke-TouchLine([string]$line) {
     'R' { [MirrorPad.Native]::mouse_event(0x8, 0, 0, 0, [UIntPtr]::Zero); [MirrorPad.Native]::mouse_event(0x10, 0, 0, 0, [UIntPtr]::Zero) }
     'W' { [MirrorPad.Native]::mouse_event(0x800, 0, 0, [int]$p[1], [UIntPtr]::Zero) }
     'Z' { [MirrorPad.Native]::Zoom([int]$p[1]) }
-    'T' { if ($p.Count -ge 2) { [MirrorPad.Native]::Text([System.Uri]::UnescapeDataString($p[1])) } }
+    'T' {
+      if ($p.Count -ge 2) {
+        [MirrorPad.Native]::Failures = 0
+        [MirrorPad.Native]::Text([System.Uri]::UnescapeDataString($p[1]))
+        if ([MirrorPad.Native]::Failures) { Write-TouchLog "frappe refusée par Windows ($([MirrorPad.Native]::Failures) touches, erreur $([MirrorPad.Native]::LastError), taille INPUT $([MirrorPad.Native]::InputSize))" }
+        else { Write-TouchLog "frappe envoyée à : $(Get-ForegroundTitle)" }
+      }
+    }
     'K' { switch ($p[1]) { 'BACK' { [MirrorPad.Native]::Press(0x08) } 'ENTER' { [MirrorPad.Native]::Press(0x0D) } } }
   }
 }

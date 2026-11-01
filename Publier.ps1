@@ -34,5 +34,4 @@ git push origin main | Out-Host
 if ($LASTEXITCODE -ne 0) { Fail 'Le push a échoué.' }
 
 Write-Host "`nPublié. L'iPad se met à jour dans la minute, le PC sous 2 minutes." -ForegroundColor Green
-Start-Process 'https://github.com/BenderRobot/MirrorPad/actions'
 Start-Sleep 3
