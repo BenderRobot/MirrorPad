@@ -97,7 +97,7 @@ $ConfigPath = Join-Path $AppDir 'config.json'
 $LogPath    = Join-Path $AppDir 'ffmpeg.log'
 $VbsPath    = Join-Path $PSScriptRoot 'MirrorPad.vbs'
 
-$defaults = [ordered]@{ IPad = '192.168.1.130'; Output = 1; Fps = 30; Mbps = 12; Encoder = 'auto'; DetectedEncoder = ''; AutoDiscover = $true; ConfigVersion = 2; Port = 7270; AutoConnect = $true; Touch = $true; InputPort = 7271; TouchScreen = ''; AutoUpdate = $true; UpdateRepo = 'BenderRobot/MirrorPad'; GitHubToken = '' }
+$defaults = [ordered]@{ IPad = '192.168.1.130'; Output = 1; Fps = 30; Mbps = 12; Encoder = 'auto'; DetectedEncoder = ''; AutoDiscover = $true; ConfigVersion = 2; AdminMode = $false; Port = 7270; AutoConnect = $true; Touch = $true; InputPort = 7271; TouchScreen = ''; AutoUpdate = $true; UpdateRepo = 'BenderRobot/MirrorPad'; GitHubToken = '' }
 $script:cfg = [pscustomobject]$defaults
 if (Test-Path $ConfigPath) {
   try {
@@ -267,7 +267,8 @@ function Restart-App {
   $timer.Stop(); $fast.Stop(); Close-Input; Stop-Stream
   $notify.Visible = $false; $notify.Dispose()
   try { $mutex.ReleaseMutex(); $mutex.Dispose() } catch {}
-  Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$VbsPath`""
+  if ($script:cfg.AdminMode) { Start-Process -FilePath 'schtasks.exe' -ArgumentList '/run /tn MirrorPad' -WindowStyle Hidden }
+  else { Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$VbsPath`"" }
   [System.Windows.Forms.Application]::Exit()
 }
 function Update-App([bool]$manual) {
@@ -447,6 +448,7 @@ $screensItem = $menu.Items.Add('Repérer les écrans…')
 $settingsItem = $menu.Items.Add('Paramètres…')
 $touchItem = $menu.Items.Add('Tactile (le doigt pilote la souris)')
 $startupItem = $menu.Items.Add('Lancer au démarrage de Windows')
+$adminItem = $menu.Items.Add('Mode administrateur (saisie dans les fenêtres admin)')
 $updateItem = $menu.Items.Add('Rechercher une mise à jour')
 [void]$menu.Items.Add('-')
 $quitItem = $menu.Items.Add('Quitter')
@@ -509,8 +511,8 @@ $ProgramsLnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'MirrorPad.l
 function New-Shortcut([string]$path) {
   $sh = New-Object -ComObject WScript.Shell
   $l = $sh.CreateShortcut($path)
-  $l.TargetPath = "$env:SystemRoot\System32\wscript.exe"
-  $l.Arguments = "`"$VbsPath`""
+  if ($script:cfg.AdminMode) { $l.TargetPath = "$env:SystemRoot\System32\schtasks.exe"; $l.Arguments = '/run /tn MirrorPad'; $l.WindowStyle = 7 }
+  else { $l.TargetPath = "$env:SystemRoot\System32\wscript.exe"; $l.Arguments = "`"$VbsPath`"" }
   $l.WorkingDirectory = $PSScriptRoot
   $ico = Join-Path $PSScriptRoot 'MirrorPad.ico'
   if (Test-Path $ico) { $l.IconLocation = "$ico,0" } else { $l.IconLocation = "$env:SystemRoot\System32\shell32.dll,15" }
@@ -518,8 +520,40 @@ function New-Shortcut([string]$path) {
   $l.Save()
 }
 try { New-Shortcut $ProgramsLnk } catch {}
-if (Test-Path $StartupLnk) { try { New-Shortcut $StartupLnk } catch {} }
+if (Test-Path $StartupLnk) { if ($script:cfg.AdminMode) { Remove-Item $StartupLnk -Force } else { try { New-Shortcut $StartupLnk } catch {} } }
+
+# --- Mode administrateur : nécessaire pour taper dans les fenêtres lancées en administrateur ----
+$script:isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Invoke-Elevated([string]$code) {
+  # exécute $code dans un PowerShell administrateur (une fenêtre UAC) et attend la fin
+  $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
+  $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
+  $p.ExitCode
+}
+function Set-AdminMode([bool]$on) {
+  $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name   # ex. AzureAD\\benjamin.laurens
+  if ($on) {
+    $code = @"
+`$a = New-ScheduledTaskAction -Execute '$env:SystemRoot\System32\wscript.exe' -Argument '"$VbsPath"'
+`$t = New-ScheduledTaskTrigger -AtLogOn -User '$user'
+`$p = New-ScheduledTaskPrincipal -UserId '$user' -LogonType Interactive -RunLevel Highest
+`$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName 'MirrorPad' -Action `$a -Trigger `$t -Principal `$p -Settings `$s -Force | Out-Null
+"@
+  } else {
+    $code = "Unregister-ScheduledTask -TaskName 'MirrorPad' -Confirm:`$false -ErrorAction SilentlyContinue"
+  }
+  try { $rc = Invoke-Elevated $code } catch { return }   # fenêtre UAC refusée : on ne change rien
+  if ($rc -ne 0) { $notify.ShowBalloonTip(4000, 'MirrorPad', "Impossible de modifier la tâche planifiée (code $rc).", 'Error'); return }
+  $script:cfg.AdminMode = $on; Save-Config
+  try { New-Shortcut $ProgramsLnk } catch {}
+  if ($on -and (Test-Path $StartupLnk)) { Remove-Item $StartupLnk -Force }
+  Restart-App
+}
 $startupItem.Checked = Test-Path $StartupLnk
+if ($script:cfg.AdminMode) { $startupItem.Checked = $true; $startupItem.Enabled = $false; $startupItem.Text = 'Lancé au démarrage (mode administrateur)' }
+$adminItem.Checked = [bool]$script:cfg.AdminMode
+if ($script:isElevated) { $versionItem.Text += ' · administrateur' }
 $touchItem.Checked = [bool]$script:cfg.Touch
 
 # --- Repérage des écrans -----------------------------------------------------------
@@ -595,6 +629,7 @@ $startupItem.Add_Click({
   $startupItem.Checked = Test-Path $StartupLnk
 })
 $updateItem.Add_Click({ Update-App $true })
+$adminItem.Add_Click({ Set-AdminMode (-not [bool]$script:cfg.AdminMode) })
 $touchItem.Add_Click({
   $script:cfg.Touch = -not [bool]$script:cfg.Touch
   $touchItem.Checked = $script:cfg.Touch
