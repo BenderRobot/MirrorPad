@@ -48,6 +48,16 @@ Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR
 
 Tourner l'iPad bascule l'écran virtuel en portrait (1536×2048) ou paysage.
 
+## Modes de saisie (bouton flottant en haut à gauche ou tap à 4 doigts → Réglages)
+
+| Mode | Fonctionnement | Lignes envoyées |
+|---|---|---|
+| Souris | gestes MirrorPad (ci-dessus) | `D/M/U/R`, `W`, `Z` |
+| Tactile | écran tactile Windows natif, jusqu'à 10 doigts (Windows 10 1809+) | `F id:x:y:d|m|u|c …` |
+| Stylet | tablette graphique Windows Ink, pression selon la surface de contact, gomme | `PD/PM x y pression [e]`, `PU` |
+| Pavé tactile | trackpad relatif, gestes 3 doigts (vue des tâches, bureau, changer d'appli) | `RM dx dy`, `CL`, `CR`, `DD/DU` |
+| Raccourcis | grille de boutons, liste `Shortcuts` du `config.json` du PC | `KS ctrl+shift+s` |
+
 ## Lignes de contrôle
 
 iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `T texte%encodé`, `K BACK`, `O P|L`, `P n`, `S fps mbps`

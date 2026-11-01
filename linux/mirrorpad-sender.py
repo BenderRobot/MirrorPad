@@ -14,6 +14,11 @@ from pathlib import Path
 
 PORT, MONITOR = 7272, 'MirrorPad'   # canal chiffré unique (image + tactile + contrôle)
 CONFIG = Path.home() / '.config' / 'mirrorpad' / 'config.json'
+DEFAULT_SHORTCUTS = [('Copier', 'ctrl+c'), ('Coller', 'ctrl+v'), ('Couper', 'ctrl+x'), ('Annuler', 'ctrl+z'), ('Rétablir', 'ctrl+shift+z'),
+                     ('Tout sélectionner', 'ctrl+a'), ('Enregistrer', 'ctrl+s'), ('Rechercher', 'ctrl+f'), ('Bureau', 'win+d'), ('Activités', 'win'),
+                     ('Capture d\'écran', 'printscreen'), ('Terminal', 'ctrl+alt+t'), ('Verrouiller', 'win+l'), ('Fermer la fenêtre', 'alt+f4'),
+                     ('Plein écran', 'f11'), ('Nouvel onglet', 'ctrl+t'), ('Volume −', 'voldown'), ('Volume +', 'volup'), ('Muet', 'mute'),
+                     ('Lecture / Pause', 'playpause')]
 ENCODER_NAMES = {'vaapi': 'VA-API (carte graphique)', 'x264': 'Processeur (x264)'}
 
 
@@ -77,7 +82,7 @@ def find_ipad(timeout=1.5):
 # --- Moniteur virtuel X11 ---------------------------------------------------------------
 class VirtualMonitor:
     def __init__(self, w, h):
-        self.w, self.h, self.x, self.base = w, h, 0, None
+        self.w, self.h, self.x, self.base, self.active = w, h, 0, None, False
 
     @staticmethod
     def screen_size():
@@ -99,12 +104,20 @@ class VirtualMonitor:
         if r.returncode:
             raise RuntimeError('xrandr --fb a échoué : ' + r.stderr.strip())
         run('xrandr', '--setmonitor', MONITOR, f'{self.w}/{mm(self.w)}x{self.h}/{mm(self.h)}+{self.x}+0', 'none')
+        self.active = True
         log(f'écran virtuel {self.w}x{self.h} à droite des écrans (x={self.x})')
 
     def remove(self):
         run('xrandr', '--delmonitor', MONITOR)
         if self.base:
             run('xrandr', '--fb', f'{self.base[0]}x{self.base[1]}')
+        if self.active:
+            log('écran virtuel retiré')
+        self.active = False
+
+    def wake(self):
+        if not self.active:
+            self.create()
 
     def set_portrait(self, portrait):
         if portrait == (self.h > self.w):
@@ -296,10 +309,38 @@ class Input:
     def xy(self, p):
         return str(int(self.mon.x + float(p[1]) * (self.mon.w - 1))), str(int(float(p[2]) * (self.mon.h - 1)))
 
+    # noms de touches MirrorPad -> noms xdotool
+    KEYS = {'win': 'super', 'esc': 'Escape', 'enter': 'Return', 'del': 'Delete', 'back': 'BackSpace', 'tab': 'Tab',
+            'space': 'space', 'ins': 'Insert', 'home': 'Home', 'end': 'End', 'pgup': 'Prior', 'pgdn': 'Next',
+            'left': 'Left', 'right': 'Right', 'up': 'Up', 'down': 'Down', 'printscreen': 'Print', 'apps': 'Menu',
+            'volup': 'XF86AudioRaiseVolume', 'voldown': 'XF86AudioLowerVolume', 'mute': 'XF86AudioMute',
+            'playpause': 'XF86AudioPlay', 'next': 'XF86AudioNext', 'prev': 'XF86AudioPrev', 'stop': 'XF86AudioStop',
+            'plus': 'plus', 'minus': 'minus'}
+
+    def combo(self, text):
+        parts = [self.KEYS.get(x, x.upper() if len(x) > 1 and x[0] == 'f' and x[1:].isdigit() else x)
+                 for x in text.lower().split('+') if x]
+        run('xdotool', 'key', '+'.join(parts))
+
     def handle(self, line):
         p = line.split(' ')
         k = p[0]
-        if k in ('D', 'M', 'U', 'R') and len(p) >= 3:
+        # tactile natif et stylet n'existent pas sous X11 : on les rejoue comme une souris
+        if k == 'F' and len(p) >= 2:
+            f = p[1].split(':')
+            if len(f) >= 4:
+                k, p = {'d': 'D', 'u': 'U', 'c': 'U'}.get(f[3], 'M'), ['', f[1], f[2]]
+        elif k in ('PD', 'PM', 'PU'):
+            k = {'PD': 'D', 'PM': 'M', 'PU': 'U'}[k]
+        if k == 'RM' and len(p) >= 3:
+            run('xdotool', 'mousemove_relative', '--', p[1], p[2])
+        elif k in ('CL', 'CR'):
+            run('xdotool', 'click', '1' if k == 'CL' else '3')
+        elif k in ('DD', 'DU'):
+            run('xdotool', 'mousedown' if k == 'DD' else 'mouseup', '1')
+        elif k == 'KS' and len(p) >= 2:
+            self.combo(urllib.parse.unquote(p[1]))
+        elif k in ('D', 'M', 'U', 'R') and len(p) >= 3:
             x, y = self.xy(p)
             extra = {'D': ['mousedown', '1'], 'U': ['mouseup', '1'], 'R': ['click', '3'], 'M': []}[k]
             run('xdotool', 'mousemove', x, y, *extra)
@@ -321,6 +362,11 @@ class Input:
         elif k == 'O':
             if self.mon.set_portrait(p[1] == 'P'):
                 self.streamer.restart()
+        elif k == 'SLEEP' and self.session:
+            log('iPad verrouillé')
+            self.session.close()
+            self.streamer.restart()
+            self.mon.remove()   # les fenêtres reviennent sur les écrans réels
         elif k == 'S' and len(p) >= 3:
             self.cfg['fps'], self.cfg['mbps'] = int(p[1]), int(p[2])
             save_config(self.cfg)
@@ -367,8 +413,10 @@ def main():
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    fails = 0
+    fails, last_alive = 0, time.time()
     while True:
+        if mon.active and time.time() - last_alive > 20:   # iPad absent : on retire l'écran virtuel
+            mon.remove()
         if not cfg['ipad'] or fails >= 2:
             ip = find_ipad()
             if ip and ip != cfg['ipad']:
@@ -393,15 +441,19 @@ def main():
             time.sleep(3)
             continue
         fails = 0
+        mon.wake()
         inp.session = session
         threading.Thread(target=inp.read_loop, args=(session,), daemon=True).start()
         session.send('N ' + socket.gethostname())
+        session.send('SC ' + ' '.join(urllib.parse.quote(f"{l}|{c}") for l, c in cfg.get('shortcuts', DEFAULT_SHORTCUTS)))
         while not session.closed:
             t0 = time.time()
             streamer.run(session)
+            last_alive = time.time()
             if time.time() - t0 < 3 and not session.closed:
                 time.sleep(3)
-        time.sleep(1)
+        last_alive = time.time()
+        time.sleep(3)
 
 
 if __name__ == '__main__':

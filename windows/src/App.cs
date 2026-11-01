@@ -38,6 +38,8 @@ namespace MirrorPad
         volatile Session session;
         string state = "";
         DateTime lostAt = DateTime.MinValue;
+        DateTime lastAlive = DateTime.Now;
+        readonly object displayLock = new object();
         int ticks;
         readonly bool elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
@@ -57,6 +59,7 @@ namespace MirrorPad
             input = new InputHandler(cfg);
             input.RefreshBounds();
             input.RestartStream = () => streamer.Stop();
+            input.Sleep = () => { Log.Write("iPad verrouillé"); var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
 
             BuildIcons(); BuildMenu();
@@ -161,8 +164,12 @@ namespace MirrorPad
             ticks++;
             if (cfg.AutoUpdate && (ticks == 10 || ticks % 120 == 0)) ThreadPool.QueueUserWorkItem(_ => CheckUpdate(false));
             try { input.RefreshBounds(); } catch { }
-            if (!wanted) { SetState("idle"); return; }
             var s = session;
+            if (s != null && !s.IsClosed) lastAlive = DateTime.Now;
+            // iPad absent depuis 20 s (éteint, hors Wi-Fi…) : on débranche l'écran virtuel
+            else if (cfg.SleepWithIPad && !cfg.VirtualDetached && (DateTime.Now - lastAlive).TotalSeconds > 20 && lastAlive != DateTime.MinValue)
+            { lastAlive = DateTime.MinValue; ThreadPool.QueueUserWorkItem(_ => SleepVirtual()); }
+            if (!wanted) { SetState("idle"); return; }
             SetState(s != null && !s.IsClosed && streamer.Running && (DateTime.Now - streamer.StartedAt).TotalSeconds >= 2 ? "connected" : "waiting");
         }
 
@@ -171,7 +178,7 @@ namespace MirrorPad
         {
             wanted = false;
             var s = session; if (s != null) s.Close();
-            streamer.Stop(); input.ReleaseLeft();
+            streamer.Stop(); input.ReleaseAll();
             SetState("idle");
         }
         void Toggle() { if (wanted) Disconnect(); else Connect(); }
@@ -208,11 +215,13 @@ namespace MirrorPad
                     continue;
                 }
                 fails = 0;
+                WakeVirtual();   // l'écran virtuel revient avant l'image
                 session = s;
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
+                s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
 
                 // diffusion : on relance ffmpeg tant que la session vit (rotation, qualité, encodeur en échec…)
                 while (wanted && !s.IsClosed)
@@ -223,10 +232,43 @@ namespace MirrorPad
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
                     if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed) Thread.Sleep(3000);   // échec immédiat : on patiente
                 }
-                streamer.Stop(); input.ReleaseLeft();
+                streamer.Stop(); input.ReleaseAll();
                 s.Close();
                 session = null;
                 Thread.Sleep(1000);
+            }
+        }
+
+        // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
+        void SleepVirtual()
+        {
+            if (!cfg.SleepWithIPad) return;
+            lock (displayLock)
+            {
+                if (cfg.VirtualDetached) return;
+                input.RefreshBounds();
+                var dev = input.TargetDevice;
+                int x, y, w, h;
+                if (string.IsNullOrEmpty(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
+                int r = Native.DetachDisplay(dev);
+                if (r != 0) { Log.Write("impossible de retirer l'écran virtuel (code " + r + ")"); return; }
+                cfg.VirtualDevice = dev; cfg.VirtualX = x; cfg.VirtualY = y; cfg.VirtualW = w; cfg.VirtualH = h; cfg.VirtualDetached = true;
+                cfg.Save();
+                Log.Write("écran virtuel retiré (" + dev + ", " + w + "x" + h + " en " + x + "," + y + ")");
+            }
+        }
+
+        void WakeVirtual()
+        {
+            lock (displayLock)
+            {
+                if (!cfg.VirtualDetached || string.IsNullOrEmpty(cfg.VirtualDevice)) return;
+                int r = Native.AttachDisplay(cfg.VirtualDevice, cfg.VirtualX, cfg.VirtualY, cfg.VirtualW, cfg.VirtualH);
+                cfg.VirtualDetached = false; cfg.Save();
+                if (r != 0) { Log.Write("impossible de rebrancher l'écran virtuel (code " + r + ")"); return; }
+                Log.Write("écran virtuel rebranché (" + cfg.VirtualW + "x" + cfg.VirtualH + ")");
+                Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
+                input.RefreshBounds();
             }
         }
 
@@ -385,7 +427,7 @@ namespace MirrorPad
         {
             timer.Stop(); wanted = false;
             var s = session; if (s != null) s.Close();
-            streamer.Stop(); input.ReleaseLeft();
+            streamer.Stop(); input.ReleaseAll();
             notify.Visible = false; notify.Dispose();
             Program.ReleaseMutex();
         }

@@ -18,6 +18,15 @@ namespace MirrorPad
     }
 
     [DataContract]
+    public class Shortcut
+    {
+        [DataMember] public string Label;
+        [DataMember] public string Keys;
+        public Shortcut() { }
+        public Shortcut(string l, string k) { Label = l; Keys = k; }
+    }
+
+    [DataContract]
     public class Config
     {
         public const int Port = 7272;   // canal chiffré unique (image + tactile + contrôle)
@@ -38,6 +47,11 @@ namespace MirrorPad
         [DataMember] public string TouchScreen;
         [DataMember] public string PcId;
         [DataMember] public List<PairedDevice> Paired;
+        [DataMember] public List<Shortcut> Shortcuts;
+        [DataMember] public bool SleepWithIPad;          // débrancher l'écran virtuel quand l'iPad est verrouillé / absent
+        [DataMember] public string VirtualDevice;        // écran virtuel mémorisé pour le rebrancher (\\.\DISPLAYn)
+        [DataMember] public int VirtualX, VirtualY, VirtualW, VirtualH;
+        [DataMember] public bool VirtualDetached;   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
 
         public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MirrorPad");
         static string FilePath { get { return Path.Combine(Dir, "config.json"); } }
@@ -53,6 +67,20 @@ namespace MirrorPad
             AutoDiscover = true; AutoConnect = true; Touch = true; AutoUpdate = true; AdminMode = false;
             UpdateRepo = "BenderRobot/MirrorPad"; GitHubToken = ""; TouchScreen = ""; PcId = "";
             Paired = new List<PairedDevice>();
+            Shortcuts = null;
+            SleepWithIPad = true; VirtualDevice = ""; VirtualDetached = false;
+        }
+
+        public static List<Shortcut> DefaultShortcuts()
+        {
+            return new List<Shortcut> {
+                new Shortcut("Copier", "ctrl+c"), new Shortcut("Coller", "ctrl+v"), new Shortcut("Couper", "ctrl+x"),
+                new Shortcut("Annuler", "ctrl+z"), new Shortcut("Rétablir", "ctrl+y"), new Shortcut("Tout sélectionner", "ctrl+a"),
+                new Shortcut("Enregistrer", "ctrl+s"), new Shortcut("Rechercher", "ctrl+f"), new Shortcut("Bureau", "win+d"),
+                new Shortcut("Vue des tâches", "win+tab"), new Shortcut("Capture d'écran", "win+shift+s"), new Shortcut("Explorateur", "win+e"),
+                new Shortcut("Verrouiller", "win+l"), new Shortcut("Fermer la fenêtre", "alt+f4"), new Shortcut("Plein écran", "f11"),
+                new Shortcut("Micro Teams", "ctrl+shift+m"), new Shortcut("Volume −", "voldown"), new Shortcut("Volume +", "volup"),
+                new Shortcut("Muet", "mute"), new Shortcut("Lecture / Pause", "playpause") };
         }
 
         public static Config Load()
@@ -71,6 +99,7 @@ namespace MirrorPad
             catch (Exception e) { Log.Write("config illisible, valeurs par défaut : " + e.Message); }
             if (c == null) c = new Config();
             if (c.Paired == null) c.Paired = new List<PairedDevice>();
+            if (c.Shortcuts == null || c.Shortcuts.Count == 0) c.Shortcuts = DefaultShortcuts();
             if (string.IsNullOrEmpty(c.PcId)) c.PcId = Guid.NewGuid().ToString("N");
             if (c.Fps != 30 && c.Fps != 60) c.Fps = 30;
             if (c.Mbps < 2 || c.Mbps > 50) c.Mbps = 12;

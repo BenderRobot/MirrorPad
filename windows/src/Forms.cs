@@ -28,7 +28,7 @@ namespace MirrorPad
     public class SettingsForm : Form
     {
         readonly Config cfg;
-        CheckBox disc, auto; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc; ListBox paired;
+        CheckBox disc, auto, sleep; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc; ListBox paired;
         readonly string[] encKeys;
 
         public SettingsForm(Config c)
@@ -48,7 +48,8 @@ namespace MirrorPad
             enc.Items.Add("Automatique" + (string.IsNullOrEmpty(c.DetectedEncoder) ? "" : " (" + Streamer.EncoderNames[c.DetectedEncoder] + ")"));
             foreach (var k in Streamer.EncoderOrder) enc.Items.Add(Streamer.EncoderNames[k]);
             enc.SelectedIndex = Math.Max(0, Array.IndexOf(encKeys, c.Encoder)); Row("Encodage", enc, ref y);
-            auto = new CheckBox { Text = "Se connecter au lancement", Checked = c.AutoConnect, Location = new Point(16, y), AutoSize = true }; Controls.Add(auto); y += 40;
+            auto = new CheckBox { Text = "Se connecter au lancement", Checked = c.AutoConnect, Location = new Point(16, y), AutoSize = true }; Controls.Add(auto); y += 30;
+            sleep = new CheckBox { Text = "Retirer l'écran virtuel quand l'iPad est verrouillé", Checked = c.SleepWithIPad, Location = new Point(16, y), AutoSize = true }; Controls.Add(sleep); y += 40;
 
             Controls.Add(new Label { Text = "iPad appairés", Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(16, y), AutoSize = true }); y += 26;
             paired = new ListBox { Location = new Point(16, y), Size = new Size(280, 90) };
@@ -84,7 +85,7 @@ namespace MirrorPad
             }
             cfg.AutoDiscover = disc.Checked; cfg.IPad = ip.Text.Trim(); cfg.Output = (int)output.Value;
             cfg.Fps = int.Parse((string)fps.SelectedItem); cfg.Mbps = (int)mbps.Value;
-            cfg.Encoder = encKeys[enc.SelectedIndex]; cfg.DetectedEncoder = ""; cfg.AutoConnect = auto.Checked;
+            cfg.Encoder = encKeys[enc.SelectedIndex]; cfg.DetectedEncoder = ""; cfg.AutoConnect = auto.Checked; cfg.SleepWithIPad = sleep.Checked;
             cfg.Save();
             return true;
         }
