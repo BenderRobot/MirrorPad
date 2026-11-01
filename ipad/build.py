@@ -34,7 +34,7 @@ sdk = '/home/bender/theos/sdks/iPhoneOS16.5.sdk'
 subprocess.run([tool + 'clang', '-target', 'arm64-apple-ios12.0', '-isysroot', sdk, '-B' + tool,
                 '-fobjc-arc', '-fblocks', '-O2', '-Wall', str(p / 'MirrorPad.m'),
                 '-framework', 'UIKit', '-framework', 'Foundation', '-framework', 'AVFoundation',
-                '-framework', 'CoreMedia', '-framework', 'QuartzCore',
+                '-framework', 'CoreMedia', '-framework', 'QuartzCore', '-framework', 'CoreGraphics',
                 '-o', str(app / 'MirrorPad')], check=True)
 subprocess.run([tool + 'ldid', '-S' + str(build / 'entitlements.plist'), str(app / 'MirrorPad')], check=True)
 meta = build / 'package/DEBIAN'; meta.mkdir()
