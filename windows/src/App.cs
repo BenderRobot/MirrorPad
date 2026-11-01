@@ -40,6 +40,9 @@ namespace MirrorPad
         DateTime lostAt = DateTime.MinValue;
         DateTime lastAlive = DateTime.Now;
         readonly object displayLock = new object();
+        readonly CameraBridge camera = new CameraBridge();
+        readonly MicPlayer mic = new MicPlayer();
+        ClipboardWatcher clip;
         int ticks;
         readonly bool elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
@@ -63,8 +66,16 @@ namespace MirrorPad
             ffmpeg = Streamer.FindFfmpeg();
 
             BuildIcons(); BuildMenu();
+            camera.Notify = msg => NotifyBoth(msg);
+            camera.RunElevated = code => { try { return elevated ? RunPowerShell(code) : RunElevated(code); } catch { return -1; } };
+            mic.Notify = msg => NotifyBoth(msg);
+            input.Media = HandleMedia;
+            clip = new ClipboardWatcher();
+            clip.TextCopied = t => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.Send("CB " + Uri.EscapeDataString(t)); };
+            clip.ImageCopied = b => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.SendFrame(Session.ClipImage, b, 0, b.Length); };
             notify.Icon = iconIdle; notify.Visible = true;
             notify.MouseDoubleClick += (s, e) => Toggle();
+            notify.BalloonTipClicked += (s, e) => { if (Directory.Exists(Inbox.Dir)) Process.Start(Inbox.Dir); };
             SetState("idle");
             try { MakeShortcuts(); } catch (Exception e) { Log.Write("raccourcis : " + e.Message); }
 
@@ -219,6 +230,7 @@ namespace MirrorPad
                 session = s;
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
+                s.BinaryReceived += HandleBinary;
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
@@ -232,7 +244,7 @@ namespace MirrorPad
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
                     if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed) Thread.Sleep(3000);   // échec immédiat : on patiente
                 }
-                streamer.Stop(); input.ReleaseAll();
+                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
                 s.Close();
                 session = null;
                 Thread.Sleep(1000);
@@ -269,6 +281,48 @@ namespace MirrorPad
                 Log.Write("écran virtuel rebranché (" + cfg.VirtualW + "x" + cfg.VirtualH + ")");
                 Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
                 input.RefreshBounds();
+            }
+        }
+
+        // ---------- capteurs de l'iPad ----------
+        void NotifyBoth(string msg)
+        {
+            Log.Write(msg);
+            Post(() => Balloon(msg, ToolTipIcon.Warning));
+            var s = session; if (s != null) s.Send("MSG " + Uri.EscapeDataString(msg));
+        }
+
+        void HandleMedia(string[] p)
+        {
+            if (p[0] == "CAM") { if (p.Length >= 2 && p[1] == "START") ThreadPool.QueueUserWorkItem(_ => camera.Start(ffmpeg)); else camera.Stop(); }
+            else if (p[0] == "MIC")
+            {
+                int rate = 48000, ch = 1;
+                if (p.Length >= 2 && p[1] == "START") { if (p.Length >= 4) { int.TryParse(p[2], out rate); int.TryParse(p[3], out ch); } mic.Start(rate, ch); }
+                else mic.Stop();
+            }
+            else if (p[0] == "CB" && p.Length >= 2 && cfg.ShareClipboard)
+            {
+                var t = Uri.UnescapeDataString(p[1]);
+                Post(() => clip.SetText(t));
+            }
+        }
+
+        void HandleBinary(byte type, byte[] data)
+        {
+            switch (type)
+            {
+                case Session.Camera: camera.Feed(data); break;
+                case Session.Audio: mic.Play(data); break;
+                case Session.ClipImage: if (cfg.ShareClipboard) Post(() => clip.SetImage(data)); break;
+                case Session.File:
+                    try
+                    {
+                        var path = Inbox.Save(data);
+                        if (path != null) Post(() => Balloon("Photo reçue de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\MirrorPad)", ToolTipIcon.Info));
+                    }
+                    catch (Exception e) { Log.Write("réception de fichier : " + e.Message); }
+                    break;
             }
         }
 
@@ -333,6 +387,13 @@ namespace MirrorPad
         {
             if (File.Exists(StartupLnk)) File.Delete(StartupLnk); else MakeShortcut(StartupLnk);
             RefreshStartupItem();
+        }
+
+        static int RunPowerShell(string psCode)
+        {
+            var enc = Convert.ToBase64String(Encoding.Unicode.GetBytes(psCode));
+            var psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -EncodedCommand " + enc) { UseShellExecute = false, CreateNoWindow = true };
+            using (var p = Process.Start(psi)) { p.WaitForExit(); return p.ExitCode; }
         }
 
         static int RunElevated(string psCode)
@@ -427,7 +488,8 @@ namespace MirrorPad
         {
             timer.Stop(); wanted = false;
             var s = session; if (s != null) s.Close();
-            streamer.Stop(); input.ReleaseAll();
+            streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
+            if (clip != null) clip.Dispose();
             notify.Visible = false; notify.Dispose();
             Program.ReleaseMutex();
         }

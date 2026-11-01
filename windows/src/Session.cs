@@ -19,7 +19,7 @@ namespace MirrorPad
 {
     public class Session
     {
-        public const byte Control = 1, Video = 2;
+        public const byte Control = 1, Video = 2, Camera = 3, ClipImage = 4, File = 5, Audio = 6;
 
         TcpClient tcp;
         SslStream ssl;
@@ -32,6 +32,7 @@ namespace MirrorPad
         public bool Authenticated { get; private set; }
 
         public event Action<string> LineReceived;      // fil de lecture de la session
+        public event Action<byte, byte[]> BinaryReceived;   // webcam, micro, image copiée, fichier
         public event Action<Session> Closed;
 
         // Décide de l'appairage : (nom iPad, code) -> accepté ? (bloquant, appelé depuis le fil de la session)
@@ -103,7 +104,10 @@ namespace MirrorPad
             {
                 byte type; byte[] data;
                 while (ReadFrame(out type, out data))
-                    if (type == Control && LineReceived != null) LineReceived(Encoding.UTF8.GetString(data));
+                {
+                    if (type == Control) { if (LineReceived != null) LineReceived(Encoding.UTF8.GetString(data)); }
+                    else if (BinaryReceived != null) BinaryReceived(type, data);
+                }
             }
             catch (Exception e) { if (!closed) Log.Write("session interrompue : " + e.Message); }
             Close();

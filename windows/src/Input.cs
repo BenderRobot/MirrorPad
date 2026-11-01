@@ -16,6 +16,7 @@ namespace MirrorPad
         public Action<string> Reply;                // envoi d'une ligne à l'iPad
         public Action RestartStream;                // relancer ffmpeg (rotation, qualité)
         public Action Sleep;                        // l'iPad se verrouille
+        public Action<string[]> Media;              // CAM / MIC / CB : traités par l'application
 
         public InputHandler(Config c) { cfg = c; }
 
@@ -138,6 +139,7 @@ namespace MirrorPad
             {
                 case "F": TouchFrame(p); break;
                 case "SLEEP": if (Sleep != null) Sleep(); break;
+                case "CAM": case "MIC": case "CB": if (Media != null) Media(p); break;
                 case "PD": case "PM": case "PU": Pen(p); break;
                 case "RM": if (p.Length >= 3 && int.TryParse(p[1], out dx) && int.TryParse(p[2], out dy)) Native.MoveRelative(dx, dy); break;
                 case "CL": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero); break;

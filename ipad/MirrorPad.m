@@ -16,6 +16,7 @@
 #import <Security/Security.h>
 #import <Security/SecureTransport.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 #define MP_PORT 7272        // canal chiffré unique PC <-> iPad (image + tactile + contrôle)
 
@@ -192,12 +193,14 @@ static NSString *MPDeviceId(void){
 @property(nonatomic,copy) void (^onPairing)(NSString *pcName,NSString *code);  // fil principal : afficher le code
 @property(nonatomic,copy) void (^onNotice)(NSString *title,NSString *text,BOOL ok); // fil principal : résultat / alerte
 @property(nonatomic,copy) void (^onVideoStart)(int fd);                        // fil réseau : nouveau flux à décoder
+@property(nonatomic,copy) void (^onBinary)(uint8_t type,NSData *data);          // fil principal : image copiée sur le PC…
 @property(nonatomic,readonly) BOOL connected;
 @property(atomic,readonly,copy) NSString *peer;
 @property(atomic) BOOL paused;   // app en arrière-plan : on refuse les connexions
 - (void)start;
 - (void)send:(NSString*)line;
 - (void)disconnect;               // envoie la file d'attente puis ferme la session
+- (void)sendBinary:(uint8_t)type data:(NSData*)d;   // 3 webcam, 4 image copiée, 5 fichier, 6 micro
 @end
 @implementation MPSecureServer {
  volatile BOOL _closing;
@@ -231,6 +234,13 @@ static NSString *MPDeviceId(void){
  if(!_auth)return;
  if([line hasSuffix:@"\n"])line=[line substringToIndex:line.length-1];
  [self enqueue:1 data:[line dataUsingEncoding:NSUTF8StringEncoding]];
+}
+- (void)sendBinary:(uint8_t)type data:(NSData*)d {
+ if(!_auth||d.length>=(1u<<24))return;
+ if(type==3||type==6){   // flux temps réel : si la file déborde (Wi-Fi lent), on jette plutôt que d'accumuler du retard
+  @synchronized(_queue){if(_queue.count>60)return;}
+ }
+ [self enqueue:type data:d];
 }
 - (void)disconnect {
  _closing=YES;
@@ -327,6 +337,9 @@ static NSString *MPDeviceId(void){
     if(_auth&&_videoFd>=0){
      size_t w=0;while(w<len){ssize_t r=write(_videoFd,h+4+w,len-w);if(r<=0){if(r<0&&errno==EINTR)continue;[self endVideo];break;}w+=(size_t)r;}
     }
+   } else if(type==4&&_auth){
+    NSData *img=[NSData dataWithBytes:h+4 length:len];
+    [self ui:^{if(self.onBinary)self.onBinary(4,img);}];
    } else if(type==1){
     NSString *line=[[NSString alloc] initWithBytes:h+4 length:len encoding:NSUTF8StringEncoding]?:@"";
     NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
@@ -611,6 +624,130 @@ done:
 - (UITextSpellCheckingType)spellCheckingType {return UITextSpellCheckingTypeNo;}
 @end
 
+#pragma mark - Webcam et micro
+
+// Caméra de l'iPad encodée en H.264 par la puce (VideoToolbox), envoyée au PC (trame 3, flux Annex B)
+@interface MPCamera : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate>
+@property(nonatomic,copy) void (^onFrame)(NSData *annexB);
+@property(nonatomic,readonly) AVCaptureSession *session;
+@property(nonatomic,readonly) BOOL front;
+- (BOOL)start:(BOOL)front;
+- (void)stop;
+@end
+static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CMSampleBufferRef sb){
+ (void)src;(void)flags;
+ if(st!=noErr||!sb||!CMSampleBufferDataIsReady(sb))return;
+ MPCamera *cam=(__bridge MPCamera*)ref;
+ static const uint8_t sc[4]={0,0,0,1};
+ NSMutableData *out=[NSMutableData data];
+ BOOL key=YES;
+ CFArrayRef att=CMSampleBufferGetSampleAttachmentsArray(sb,false);
+ if(att&&CFArrayGetCount(att)>0)key=!CFDictionaryContainsKey((CFDictionaryRef)CFArrayGetValueAtIndex(att,0),kCMSampleAttachmentKey_NotSync);
+ if(key){   // SPS/PPS devant chaque image clé : le PC peut prendre le flux en route
+  CMFormatDescriptionRef fmt=CMSampleBufferGetFormatDescription(sb);size_t count=0;
+  CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt,0,NULL,NULL,&count,NULL);
+  for(size_t i=0;i<count;i++){const uint8_t *ps=NULL;size_t len=0;
+   if(CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt,i,&ps,&len,NULL,NULL)==noErr){[out appendBytes:sc length:4];[out appendBytes:ps length:len];}}
+ }
+ CMBlockBufferRef bb=CMSampleBufferGetDataBuffer(sb);size_t total=0;char *ptr=NULL;
+ if(CMBlockBufferGetDataPointer(bb,0,NULL,&total,&ptr)!=kCMBlockBufferNoErr)return;
+ size_t off=0;
+ while(off+4<=total){   // AVCC (longueur sur 4 octets) -> Annex B (code de début)
+  uint32_t n;memcpy(&n,ptr+off,4);n=CFSwapInt32BigToHost(n);off+=4;
+  if(off+n>total)break;
+  [out appendBytes:sc length:4];[out appendBytes:ptr+off length:n];off+=n;
+ }
+ if(cam.onFrame)cam.onFrame(out);
+}
+@implementation MPCamera {
+ VTCompressionSessionRef _vt;
+ dispatch_queue_t _q;
+}
+- (BOOL)start:(BOOL)front {
+ [self stop];
+ _front=front;
+ AVCaptureDevice *dev=[AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera mediaType:AVMediaTypeVideo position:front?AVCaptureDevicePositionFront:AVCaptureDevicePositionBack];
+ NSError *err=nil;AVCaptureDeviceInput *in=dev?[AVCaptureDeviceInput deviceInputWithDevice:dev error:&err]:nil;
+ if(!in){NSLog(@"MirrorPad: caméra indisponible %@",err);return NO;}
+ _session=[AVCaptureSession new];
+ if([_session canSetSessionPreset:AVCaptureSessionPreset1280x720])_session.sessionPreset=AVCaptureSessionPreset1280x720;
+ if(![_session canAddInput:in])return NO;
+ [_session addInput:in];
+ AVCaptureVideoDataOutput *out=[AVCaptureVideoDataOutput new];
+ out.videoSettings=@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)};
+ out.alwaysDiscardsLateVideoFrames=YES;
+ _q=dispatch_queue_create("mirrorpad.camera",DISPATCH_QUEUE_SERIAL);
+ [out setSampleBufferDelegate:self queue:_q];
+ if(![_session canAddOutput:out])return NO;
+ [_session addOutput:out];
+ AVCaptureConnection *c=[out connectionWithMediaType:AVMediaTypeVideo];
+ UIInterfaceOrientation o=UIApplication.sharedApplication.statusBarOrientation;
+ if(c.isVideoOrientationSupported)c.videoOrientation=o==UIInterfaceOrientationLandscapeLeft?AVCaptureVideoOrientationLandscapeLeft:AVCaptureVideoOrientationLandscapeRight;
+ // encodeur matériel H.264 : temps réel, sans images B, une image clé par seconde
+ if(VTCompressionSessionCreate(NULL,1280,720,kCMVideoCodecType_H264,NULL,NULL,NULL,MPEncoded,(__bridge void*)self,&_vt)!=noErr){_session=nil;return NO;}
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_RealTime,kCFBooleanTrue);
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_ProfileLevel,kVTProfileLevel_H264_Main_AutoLevel);
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_AllowFrameReordering,kCFBooleanFalse);
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_MaxKeyFrameInterval,(__bridge CFTypeRef)@30);
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_ExpectedFrameRate,(__bridge CFTypeRef)@30);
+ VTSessionSetProperty(_vt,kVTCompressionPropertyKey_AverageBitRate,(__bridge CFTypeRef)@3000000);
+ VTCompressionSessionPrepareToEncodeFrames(_vt);
+ [_session startRunning];
+ return YES;
+}
+- (void)captureOutput:(AVCaptureOutput*)o didOutputSampleBuffer:(CMSampleBufferRef)sb fromConnection:(AVCaptureConnection*)c {
+ (void)o;(void)c;
+ if(!_vt)return;
+ VTCompressionSessionEncodeFrame(_vt,CMSampleBufferGetImageBuffer(sb),CMSampleBufferGetPresentationTimeStamp(sb),kCMTimeInvalid,NULL,NULL,NULL);
+}
+- (void)stop {
+ [_session stopRunning];_session=nil;
+ if(_vt){VTCompressionSessionCompleteFrames(_vt,kCMTimeInvalid);VTCompressionSessionInvalidate(_vt);CFRelease(_vt);_vt=NULL;}
+}
+@end
+
+// Micro de l'iPad -> PCM 16 bits mono 48 kHz (trame 6), joué sur le PC dans VB-CABLE
+@interface MPMic : NSObject
+@property(nonatomic,copy) void (^onPCM)(NSData *pcm);
+@property(nonatomic,readonly) BOOL running;
+- (BOOL)start;
+- (void)stop;
+@end
+@implementation MPMic { AVAudioEngine *_engine; AVAudioConverter *_conv; AVAudioFormat *_target; }
+- (BOOL)start {
+ [self stop];
+ AVAudioSession *as=AVAudioSession.sharedInstance;NSError *err=nil;
+ [as setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionMixWithOthers error:&err];
+ [as setActive:YES error:&err];
+ _engine=[AVAudioEngine new];
+ AVAudioInputNode *input=_engine.inputNode;
+ AVAudioFormat *inFmt=[input outputFormatForBus:0];
+ if(inFmt.sampleRate<=0){_engine=nil;return NO;}
+ _target=[[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:48000 channels:1 interleaved:YES];
+ _conv=[[AVAudioConverter alloc] initFromFormat:inFmt toFormat:_target];
+ __weak typeof(self) w=self;
+ [input installTapOnBus:0 bufferSize:1024 format:inFmt block:^(AVAudioPCMBuffer *buf,AVAudioTime *when){
+  (void)when;typeof(self) s=w;if(!s)return;
+  AVAudioFrameCount cap=(AVAudioFrameCount)(buf.frameLength*48000.0/inFmt.sampleRate)+32;
+  AVAudioPCMBuffer *out=[[AVAudioPCMBuffer alloc] initWithPCMFormat:s->_target frameCapacity:cap];
+  __block BOOL given=NO;NSError *e=nil;
+  [s->_conv convertToBuffer:out error:&e withInputFromBlock:^AVAudioBuffer*(AVAudioPacketCount n,AVAudioConverterInputStatus *st){
+   (void)n;if(given){*st=AVAudioConverterInputStatus_NoDataNow;return nil;}
+   given=YES;*st=AVAudioConverterInputStatus_HaveData;return buf;
+  }];
+  if(out.frameLength&&s.onPCM)s.onPCM([NSData dataWithBytes:out.int16ChannelData[0] length:out.frameLength*2]);
+ }];
+ [_engine prepare];
+ if(![_engine startAndReturnError:&err]){NSLog(@"MirrorPad: micro %@",err);[self stop];return NO;}
+ _running=YES;
+ return YES;
+}
+- (void)stop {
+ if(_engine){[_engine.inputNode removeTapOnBus:0];[_engine stop];_engine=nil;}
+ _running=NO;
+}
+@end
+
 #pragma mark - Écran d'accueil
 
 static UIColor *MPRGB(unsigned hex,CGFloat a){
@@ -812,7 +949,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 
 static NSUserDefaults *MPDefaults(void){
  NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
- [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO}];
+ [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES}];
  return d;
 }
 static NSString *MPAgo(NSDate *date){
@@ -830,11 +967,14 @@ static NSString *MPAgo(NSDate *date){
 @property(nonatomic,copy) void (^onTrackpad)(void);
 @property(nonatomic,copy) void (^onShortcuts)(void);
 @property(nonatomic,copy) void (^onKeyboard)(void);
+@property(nonatomic,copy) void (^onCamera)(void);
+@property(nonatomic,copy) void (^onMic)(void);
+@property(nonatomic,copy) void (^onPhotos)(void);
 - (void)showIn:(UIView*)parent;
 @end
 @implementation MPSettingsPanel {
  UISegmentedControl *_fps,*_quality,*_inputMode,*_penTool;
- UISwitch *_longPress,*_inertia,*_hud;
+ UISwitch *_longPress,*_inertia,*_hud,*_clip;
  UIStackView *_history,*_paired;
 }
 static const int MPQualities[3]={6,12,20};
@@ -864,6 +1004,9 @@ static const int MPQualities[3]={6,12,20};
 - (void)openTrackpad {[self hide];if(self.onTrackpad)self.onTrackpad();}
 - (void)openShortcuts {[self hide];if(self.onShortcuts)self.onShortcuts();}
 - (void)openKeyboard {[self hide];if(self.onKeyboard)self.onKeyboard();}
+- (void)openCamera {[self hide];if(self.onCamera)self.onCamera();}
+- (void)toggleMic {[self hide];if(self.onMic)self.onMic();}
+- (void)openPhotos {[self hide];if(self.onPhotos)self.onPhotos();}
 - (void)modeChanged {
  NSUserDefaults *d=MPDefaults();
  [d setInteger:_inputMode.selectedSegmentIndex forKey:@"inputMode"];
@@ -903,22 +1046,26 @@ static const int MPQualities[3]={6,12,20};
  UILabel *modeNote=MPLabel(@"Souris : gestes MirrorPad · Tactile : écran tactile Windows natif · Stylet : tablette graphique (Windows Ink).",13,UIFontWeightRegular,.6,0);
  UIStackView *tools=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Pavé tactile" action:@selector(openTrackpad)],[self tool:@"Raccourcis" action:@selector(openShortcuts)],[self tool:@"Clavier" action:@selector(openKeyboard)]]];
  tools.distribution=UIStackViewDistributionFillEqually;tools.spacing=10;
+ UIStackView *sensors=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Webcam" action:@selector(openCamera)],[self tool:@"Micro" action:@selector(toggleMic)],[self tool:@"Envoyer des photos" action:@selector(openPhotos)]]];
+ sensors.distribution=UIStackViewDistributionFillEqually;sensors.spacing=10;
  _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
  _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
- _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];
+ _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];
  UILabel *note=MPLabel(@"La qualité est appliquée au PC dès qu'il est connecté.",13,UIFontWeightRegular,.6,0);
  _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
  _paired=[UIStackView new];_paired.axis=UILayoutConstraintAxisVertical;_paired.spacing=8;_paired.alignment=UIStackViewAlignmentLeading;
 
  UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:@[head,
    [self section:@"MODE"],[self row:@"Le doigt agit comme" control:_inputMode],[self row:@"Outil du stylet" control:_penTool],modeNote,tools,
+   [self section:@"CAPTEURS DE L'IPAD"],sensors,
+   [self section:@"PARTAGE"],[self row:@"Presse-papiers partagé avec le PC" control:_clip],
    [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
    [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
    [self section:@"AFFICHAGE"],[self row:@"Indicateur de performance" control:_hud],
    [self section:@"DERNIERS PC"],_history,
    [self section:@"SÉCURITÉ"],_paired]];
  st.axis=UILayoutConstraintAxisVertical;st.spacing=12;st.translatesAutoresizingMaskIntoConstraints=NO;
- [st setCustomSpacing:22 afterView:head];[st setCustomSpacing:16 afterView:tools];
+ [st setCustomSpacing:22 afterView:head];[st setCustomSpacing:16 afterView:tools];[st setCustomSpacing:16 afterView:sensors];
  for(UIView *v in st.arrangedSubviews)if([v isKindOfClass:UILabel.class]&&((UILabel*)v).font.pointSize==12)[st setCustomSpacing:8 afterView:v];
  // le contenu défile si l'écran est trop petit (portrait, clavier…)
  UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
@@ -946,7 +1093,7 @@ static const int MPQualities[3]={6,12,20};
  _fps.selectedSegmentIndex=[d integerForKey:@"fps"]>=60?1:0;
  NSInteger m=[d integerForKey:@"mbps"];_quality.selectedSegmentIndex=m<=8?0:(m<=15?1:2);
  _inputMode.selectedSegmentIndex=[d integerForKey:@"inputMode"];_penTool.selectedSegmentIndex=[d boolForKey:@"penEraser"]?1:0;
- _longPress.on=[d boolForKey:@"longPress"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
+ _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
  for(UIView *v in _history.arrangedSubviews){[_history removeArrangedSubview:v];[v removeFromSuperview];}
  NSArray *h=[d arrayForKey:@"history"];
  if(!h.count)[_history addArrangedSubview:MPLabel(@"Aucun PC pour l'instant.",15,UIFontWeightRegular,.6,0)];
@@ -975,7 +1122,7 @@ static const int MPQualities[3]={6,12,20};
 }
 - (void)togglesChanged {
  NSUserDefaults *d=MPDefaults();
- [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
+ [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_clip.on forKey:@"clipboard"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
  if(self.onChange)self.onChange();
 }
 - (void)showIn:(UIView*)parent {
@@ -1222,6 +1369,66 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
 @end
 
+// Écran de la webcam : aperçu, changement de caméra ; « Masquer » laisse la webcam tourner
+@interface MPCameraView : UIView
+@property(nonatomic,copy) void (^onSwitch)(void);
+@property(nonatomic,copy) void (^onStop)(void);
+- (void)attach:(AVCaptureSession*)session;
+- (void)showIn:(UIView*)parent;
+- (void)hide;
+@end
+@implementation MPCameraView { AVCaptureVideoPreviewLayer *_preview; }
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ self.backgroundColor=UIColor.blackColor;
+ UILabel *badge=MPLabel(@"●  WEBCAM ACTIVE  ·  « MirrorPad (iPad) » sur le PC",14,UIFontWeightSemibold,1,1);
+ UIView *pill=[UIView new];pill.backgroundColor=[UIColor colorWithRed:.8 green:.1 blue:.2 alpha:.75];pill.layer.cornerRadius=18;
+ pill.translatesAutoresizingMaskIntoConstraints=NO;badge.translatesAutoresizingMaskIntoConstraints=NO;
+ [pill addSubview:badge];[self addSubview:pill];
+ UIButton *sw=MPGlassButton(@"Changer de caméra",16),*hide=MPGlassButton(@"Masquer (la webcam continue)",16),*stop=MPGlassButton(@"Arrêter la webcam",16);
+ stop.backgroundColor=[UIColor colorWithRed:.8 green:.1 blue:.2 alpha:.55];
+ [sw addTarget:self action:@selector(switchCam) forControlEvents:UIControlEventTouchUpInside];
+ [hide addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+ [stop addTarget:self action:@selector(stopCam) forControlEvents:UIControlEventTouchUpInside];
+ UIStackView *bar=[[UIStackView alloc] initWithArrangedSubviews:@[sw,hide,stop]];
+ bar.distribution=UIStackViewDistributionFillEqually;bar.spacing=12;bar.translatesAutoresizingMaskIntoConstraints=NO;
+ [self addSubview:bar];
+ [NSLayoutConstraint activateConstraints:@[
+  [pill.topAnchor constraintEqualToAnchor:self.topAnchor constant:22],[pill.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+  [badge.topAnchor constraintEqualToAnchor:pill.topAnchor constant:9],[badge.bottomAnchor constraintEqualToAnchor:pill.bottomAnchor constant:-9],
+  [badge.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:18],[badge.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-18],
+  [bar.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:24],[bar.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-24],
+  [bar.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-22],[bar.heightAnchor constraintEqualToConstant:58]]];
+ return self;
+}
+- (void)attach:(AVCaptureSession*)session {
+ [_preview removeFromSuperlayer];
+ if(!session)return;
+ _preview=[AVCaptureVideoPreviewLayer layerWithSession:session];
+ _preview.videoGravity=AVLayerVideoGravityResizeAspectFill;
+ [self.layer insertSublayer:_preview atIndex:0];
+ [self setNeedsLayout];
+}
+- (void)layoutSubviews {
+ [super layoutSubviews];
+ [CATransaction begin];[CATransaction setDisableActions:YES];_preview.frame=self.bounds;[CATransaction commit];
+ AVCaptureConnection *c=_preview.connection;
+ if(c.isVideoOrientationSupported){
+  UIInterfaceOrientation o=UIApplication.sharedApplication.statusBarOrientation;
+  c.videoOrientation=o==UIInterfaceOrientationLandscapeLeft?AVCaptureVideoOrientationLandscapeLeft:
+   o==UIInterfaceOrientationLandscapeRight?AVCaptureVideoOrientationLandscapeRight:
+   o==UIInterfaceOrientationPortraitUpsideDown?AVCaptureVideoOrientationPortraitUpsideDown:AVCaptureVideoOrientationPortrait;
+ }
+}
+- (void)switchCam {if(self.onSwitch)self.onSwitch();}
+- (void)stopCam {if(self.onStop)self.onStop();[self hide];}
+- (void)showIn:(UIView*)parent {
+ self.frame=parent.bounds;self.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ self.alpha=0;[parent addSubview:self];[UIView animateWithDuration:.3 animations:^{self.alpha=1;}];
+}
+- (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
+@end
+
 // Petit bandeau en haut à droite : images/s, débit, définition, encodeur, latence réseau
 @interface MPHud : UIView
 @property(nonatomic,readonly) UILabel *label;
@@ -1244,7 +1451,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 
 #pragma mark - Interface
 
-@interface MPViewController : UIViewController
+@interface MPViewController : UIViewController<UIImagePickerControllerDelegate,UINavigationControllerDelegate>
 @end
 @implementation MPViewController {
  AVSampleBufferDisplayLayer *_video;
@@ -1253,6 +1460,10 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  unsigned _decoderGen;
  MPNoticeView *_notice;
  UIButton *_dock;
+ MPCamera *_camera;
+ MPMic *_mic;
+ MPCameraView *_camView;
+ NSInteger _clipCount;
  MPSecureServer *_input;
  MPTouchView *_touch;
  NSNetService *_bonjour;
@@ -1310,6 +1521,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _input.onPairing=^(NSString *pc,NSString *code){[w showNotice:@"Nouveau PC" text:[NSString stringWithFormat:@"« %@ » demande à utiliser cet iPad. Vérifiez que ce code s'affiche sur le PC, puis cliquez sur « Accepter » là-bas.",pc] code:code ok:YES];};
  _input.onNotice=^(NSString *title,NSString *text,BOOL ok){[w showNotice:title text:text code:nil ok:ok];};
  _input.onVideoStart=^(int fd){dispatch_async(dispatch_get_main_queue(),^{[w startDecoder:fd];});};
+ _input.onBinary=^(uint8_t type,NSData *data){if(type==4)[w clipboardImage:data];};
+ _input.onClosed=^{[w sensorsOff:NO];};
  [_input start];
  [self applyPreferences];
  [self refreshLastPC];
@@ -1351,6 +1564,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 #pragma mark Contrôle (canal avec le PC)
 - (NSString*)orientationLine:(CGSize)size {return size.height>size.width?@"O P\n":@"O L\n";}
 - (void)controlConnected {
+ _clipCount=UIPasteboard.generalPasteboard.changeCount;   // on ne pousse pas l'ancien contenu à la connexion
  [_input send:[self orientationLine:self.view.bounds.size]];
  NSUserDefaults *d=MPDefaults();
  if([d boolForKey:@"qualityPending"]){
@@ -1365,6 +1579,13 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   _rttMs=CACurrentMediaTime()*1000-p[1].doubleValue;
  } else if([k isEqualToString:@"N"]&&p.count>=2){
   [self rememberPC:[[p subarrayWithRange:NSMakeRange(1,p.count-1)] componentsJoinedByString:@" "] ip:_input.peer];
+ } else if([k isEqualToString:@"CB"]&&p.count>=2){
+  if([MPDefaults() boolForKey:@"clipboard"]){
+   UIPasteboard.generalPasteboard.string=[p[1] stringByRemovingPercentEncoding]?:@"";
+   _clipCount=UIPasteboard.generalPasteboard.changeCount;
+  }
+ } else if([k isEqualToString:@"MSG"]&&p.count>=2){
+  [self showNotice:@"MirrorPad" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
  } else if([k isEqualToString:@"SC"]){
   // liste des raccourcis du PC : « libellé|touches » encodés, séparés par des espaces
   NSMutableArray *items=[NSMutableArray array];
@@ -1411,6 +1632,9 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  panel.onTrackpad=^{[w showTrackpad];};
  panel.onShortcuts=^{[w showShortcuts];};
  panel.onKeyboard=^{[w showKeyboard];};
+ panel.onCamera=^{[w showCamera];};
+ panel.onMic=^{[w toggleMic];};
+ panel.onPhotos=^{[w pickPhoto];};
  [panel showIn:self.view];
 }
 - (void)showTrackpad {
@@ -1427,12 +1651,110 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  [v showIn:self.view];
 }
 - (void)showKeyboard {[_touch becomeFirstResponder];}
+
+#pragma mark Capteurs : webcam, micro, photos, presse-papiers
+- (void)showCamera {
+ if(!_input.connected){[self showNotice:@"Webcam" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
+ if(!_camera)_camera=[MPCamera new];
+ if(!_camera.session){
+  __weak MPSecureServer *in=_input;
+  _camera.onFrame=^(NSData *f){[in sendBinary:3 data:f];};
+  if(![_camera start:YES]){[self showNotice:@"Webcam" text:@"La caméra est indisponible. Autorisez MirrorPad dans Réglages > Confidentialité > Appareil photo." code:nil ok:NO];return;}
+  [_input send:@"CAM START 1280 720 30"];
+ }
+ _camView=[MPCameraView new];
+ __weak typeof(self) w=self;
+ _camView.onSwitch=^{typeof(self) s=w;if(!s)return;[s->_camera start:!s->_camera.front];[s->_camView attach:s->_camera.session];};
+ _camView.onStop=^{[w stopCamera];};
+ [_camView attach:_camera.session];
+ [_camView showIn:self.view];
+ [self updateDock];
+}
+- (void)stopCamera {
+ if(!_camera.session)return;
+ [_camera stop];
+ [_input send:@"CAM STOP"];
+ [self updateDock];
+}
+- (void)toggleMic {
+ if(!_mic)_mic=[MPMic new];
+ if(_mic.running){
+  [_mic stop];[_input send:@"MIC STOP"];
+  [self showNotice:@"Micro" text:@"Le micro de l'iPad est coupé." code:nil ok:YES];
+ } else {
+  if(!_input.connected){[self showNotice:@"Micro" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
+  __weak MPSecureServer *in=_input;
+  _mic.onPCM=^(NSData *pcm){[in sendBinary:6 data:pcm];};
+  if(![_mic start]){[self showNotice:@"Micro" text:@"Le micro est indisponible. Autorisez MirrorPad dans Réglages > Confidentialité > Micro." code:nil ok:NO];return;}
+  [_input send:@"MIC START 48000 1"];
+  [self showNotice:@"Micro actif" text:@"Sur le PC, choisissez « CABLE Output » comme micro dans Teams, Zoom… (pilote VB-CABLE)." code:nil ok:YES];
+ }
+ [self updateDock];
+}
+// arrêt de la caméra et du micro (session fermée, iPad verrouillé)
+- (void)sensorsOff:(BOOL)notify {
+ if(_camera.session){[_camera stop];if(notify)[_input send:@"CAM STOP"];}
+ if(_mic.running){[_mic stop];if(notify)[_input send:@"MIC STOP"];}
+ [_camView hide];_camView=nil;
+ [self updateDock];
+}
+// bouton flottant cerclé de rouge tant que la webcam ou le micro fonctionnent
+- (void)updateDock {
+ BOOL live=_camera.session||_mic.running;
+ _dock.layer.borderColor=(live?[UIColor colorWithRed:1 green:.25 blue:.3 alpha:1]:[UIColor colorWithWhite:1 alpha:.6]).CGColor;
+ _dock.layer.borderWidth=live?3:1.5;_dock.alpha=live?.9:.4;
+}
+- (void)pickPhoto {
+ if(!_input.connected){[self showNotice:@"Photos" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
+ UIImagePickerController *pk=[UIImagePickerController new];
+ pk.sourceType=UIImagePickerControllerSourceTypePhotoLibrary;pk.delegate=self;
+ pk.modalPresentationStyle=UIModalPresentationPopover;   // obligatoire sur iPad pour la photothèque
+ pk.popoverPresentationController.sourceView=self.view;
+ pk.popoverPresentationController.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds),1,1);
+ pk.popoverPresentationController.permittedArrowDirections=0;
+ [self presentViewController:pk animated:YES completion:nil];
+}
+- (void)imagePickerController:(UIImagePickerController*)pk didFinishPickingMediaWithInfo:(NSDictionary<NSString*,id>*)info {
+ [pk dismissViewControllerAnimated:YES completion:nil];
+ UIImage *img=info[UIImagePickerControllerOriginalImage];
+ NSData *jpg=img?UIImageJPEGRepresentation(img,.92):nil;
+ if(!jpg)return;
+ NSDateFormatter *f=[NSDateFormatter new];f.dateFormat=@"'iPad_'yyyy-MM-dd_HH-mm-ss'.jpg'";
+ NSData *name=[[f stringFromDate:[NSDate date]] dataUsingEncoding:NSUTF8StringEncoding];
+ NSMutableData *frame=[NSMutableData dataWithLength:2];
+ uint8_t *h=frame.mutableBytes;h[0]=(uint8_t)(name.length>>8);h[1]=(uint8_t)name.length;
+ [frame appendData:name];[frame appendData:jpg];
+ if(frame.length>=(1u<<24)){[self showNotice:@"Photos" text:@"Photo trop volumineuse (16 Mo maximum)." code:nil ok:NO];return;}
+ [_input sendBinary:5 data:frame];
+ [self showNotice:@"Photo envoyée" text:@"Elle arrive dans Téléchargements > MirrorPad sur le PC." code:nil ok:YES];
+}
+- (void)imagePickerControllerDidCancel:(UIImagePickerController*)pk {[pk dismissViewControllerAnimated:YES completion:nil];}
+// Presse-papiers : vérifié chaque seconde (iOS 12 ne prévient pas des copies)
+- (void)clipboardTick {
+ if(!_input.connected||![MPDefaults() boolForKey:@"clipboard"])return;
+ UIPasteboard *pb=UIPasteboard.generalPasteboard;
+ if(pb.changeCount==_clipCount)return;
+ _clipCount=pb.changeCount;
+ if(pb.hasStrings){
+  NSString *t=pb.string;
+  if(t.length&&t.length<500000)[_input send:[@"CB " stringByAppendingString:MPEsc(t)]];
+ } else if(pb.hasImages){
+  NSData *png=UIImagePNGRepresentation(pb.image);
+  if(png.length&&png.length<15*1024*1024)[_input sendBinary:4 data:png];
+ }
+}
+- (void)clipboardImage:(NSData*)png {
+ if(![MPDefaults() boolForKey:@"clipboard"])return;
+ UIImage *img=[UIImage imageWithData:png];
+ if(img){UIPasteboard.generalPasteboard.image=img;_clipCount=UIPasteboard.generalPasteboard.changeCount;}
+}
 - (void)requestQualityFps:(int)fps mbps:(int)mbps {
  if(_input.connected)[_input send:[NSString stringWithFormat:@"S %d %d\n",fps,mbps]];
  else [MPDefaults() setBool:YES forKey:@"qualityPending"];
 }
 - (void)setStreamSize:(CGSize)sz {_streamSize=sz;}
 - (void)statsTick {
+ [self clipboardTick];
  uint64_t bytes=0,frames=0;[_receiver takeBytes:&bytes frames:&frames];
  if(_input.connected)[_input send:[NSString stringWithFormat:@"P %.0f\n",CACurrentMediaTime()*1000]];
  if(_hud.hidden)return;
@@ -1476,6 +1798,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)appBackground {
  _input.paused=YES;
  if(!_input.connected)return;
+ [self sensorsOff:YES];   // iOS coupe la caméra et le micro en arrière-plan
  UIApplication *app=UIApplication.sharedApplication;
  __block UIBackgroundTaskIdentifier task=[app beginBackgroundTaskWithExpirationHandler:^{[app endBackgroundTask:task];task=UIBackgroundTaskInvalid;}];
  [_input send:@"SLEEP"];

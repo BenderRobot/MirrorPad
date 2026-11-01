@@ -19,6 +19,9 @@ info = {
     'UISupportedInterfaceOrientations~ipad': ['UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight', 'UIInterfaceOrientationPortrait', 'UIInterfaceOrientationPortraitUpsideDown'],
     'UILaunchScreen': {},
     'CFBundleIconFiles': ['AppIcon76x76'],
+    'NSCameraUsageDescription': "La caméra de l'iPad sert de webcam pour le PC (Teams, Zoom…).",
+    'NSMicrophoneUsageDescription': "Le micro de l'iPad sert de micro pour le PC.",
+    'NSPhotoLibraryUsageDescription': "Pour envoyer vos photos au PC.",
     'CFBundleURLTypes': [{'CFBundleURLName': 'local.btv.mirrorpad', 'CFBundleURLSchemes': ['mirrorpad']}],
     'CFBundleIcons~ipad': {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon76x76']}},
 }
@@ -34,7 +37,7 @@ sdk = '/home/bender/theos/sdks/iPhoneOS16.5.sdk'
 subprocess.run([tool + 'clang', '-target', 'arm64-apple-ios12.0', '-isysroot', sdk, '-B' + tool,
                 '-fobjc-arc', '-fblocks', '-O2', '-Wall', str(p / 'MirrorPad.m'),
                 '-framework', 'UIKit', '-framework', 'Foundation', '-framework', 'AVFoundation',
-                '-framework', 'CoreMedia', '-framework', 'QuartzCore', '-framework', 'CoreGraphics', '-framework', 'Security',
+                '-framework', 'CoreMedia', '-framework', 'QuartzCore', '-framework', 'CoreGraphics', '-framework', 'Security', '-framework', 'VideoToolbox', '-framework', 'CoreVideo', '-framework', 'AudioToolbox',
                 '-o', str(app / 'MirrorPad')], check=True)
 subprocess.run([tool + 'ldid', '-S' + str(build / 'entitlements.plist'), str(app / 'MirrorPad')], check=True)
 meta = build / 'package/DEBIAN'; meta.mkdir()

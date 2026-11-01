@@ -63,6 +63,15 @@ Tourner l'iPad bascule l'écran virtuel en portrait (1536×2048) ou paysage.
 iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `T texte%encodé`, `K BACK`, `O P|L`, `P n`, `S fps mbps`
 PC → iPad : `P n` (latence), `N nom-du-pc`, `C fps mbps encodeur`, `V NEW` / `V END` (début / fin d'un flux vidéo)
 
+## Capteurs de l'iPad (Réglages → Capteurs)
+
+| Fonction | Côté iPad | Côté PC | Trame |
+|---|---|---|---|
+| Webcam | caméra avant/arrière, H.264 1280×720 (VideoToolbox) | webcam « MirrorPad (iPad) » via [akvirtualcamera](https://github.com/webcamoid/akvirtualcamera) (créée au 1er usage, droits admin une fois) | 3 |
+| Micro | PCM 16 bits mono 48 kHz | joué dans « CABLE Input » de [VB-CABLE](https://vb-audio.com/Cable/) → choisir « CABLE Output » comme micro | 6 |
+| Presse-papiers | texte et images, dans les deux sens | idem (désactivable des deux côtés) | ligne `CB`, trame 4 |
+| Photos | sélection dans la photothèque | `Téléchargements\MirrorPad` | 5 : `[longueur nom 2 o][nom][données]` |
+
 ## Installation Windows
 
 `powershell -ExecutionPolicy Bypass -File windows\Installer-MirrorPad.ps1` (ajouter `-Token github_pat_…` si le dépôt est privé).

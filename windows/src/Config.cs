@@ -48,7 +48,8 @@ namespace MirrorPad
         [DataMember] public string PcId;
         [DataMember] public List<PairedDevice> Paired;
         [DataMember] public List<Shortcut> Shortcuts;
-        [DataMember] public bool SleepWithIPad;          // débrancher l'écran virtuel quand l'iPad est verrouillé / absent
+        [DataMember] public bool SleepWithIPad;
+        [DataMember] public bool ShareClipboard;         // presse-papiers partagé avec l'iPad          // débrancher l'écran virtuel quand l'iPad est verrouillé / absent
         [DataMember] public string VirtualDevice;        // écran virtuel mémorisé pour le rebrancher (\\.\DISPLAYn)
         [DataMember] public int VirtualX, VirtualY, VirtualW, VirtualH;
         [DataMember] public bool VirtualDetached;   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
@@ -68,7 +69,7 @@ namespace MirrorPad
             UpdateRepo = "BenderRobot/MirrorPad"; GitHubToken = ""; TouchScreen = ""; PcId = "";
             Paired = new List<PairedDevice>();
             Shortcuts = null;
-            SleepWithIPad = true; VirtualDevice = ""; VirtualDetached = false;
+            SleepWithIPad = true; ShareClipboard = true; VirtualDevice = ""; VirtualDetached = false;
         }
 
         public static List<Shortcut> DefaultShortcuts()
