@@ -164,23 +164,28 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 }
 @end
 
-// Gestes : 1 doigt tapé = clic, 1 doigt glissé = glisser (bouton maintenu),
-//          2 doigts tapés = clic droit, 2 doigts glissés verticalement = molette.
-@interface MPTouchView : UIView
+// Gestes : 1 doigt tapé = clic · 1 doigt glissé = glisser · appui long = clic droit
+//          2 doigts tapés = clic droit · 2 doigts glissés = molette (avec élan) · pincer = zoom (Ctrl + molette)
+//          3 doigts tapés = afficher / masquer le clavier (le texte tapé est envoyé au PC)
+// Lignes envoyées au PC : "D x y" "M x y" "U x y" "R x y" "W n" "Z n" "T texte%encodé" "K BACK"
+@interface MPTouchView : UIView<UIKeyInput>
 @property(nonatomic,copy) void (^emit)(NSString *line);
 @property(nonatomic) CGSize videoSize;
 @end
 @implementation MPTouchView {
- int _mode;          // 0 rien, 1 un doigt, 2 deux doigts
- BOOL _dragging,_moved;
+ int _mode;                 // 0 rien, 1 un doigt, 2 deux doigts, 3 trois doigts
+ BOOL _dragging,_moved,_longFired,_decided,_pinching;
  __weak UITouch *_primary;
- CGPoint _start,_last,_centroid;
- CGFloat _scrollRef,_scrollAcc,_scrollTotal;
+ CGPoint _start,_last,_centroid,_centroidStart;
+ CGFloat _scrollRef,_scrollAcc,_pinchRef,_velocity;
+ NSTimeInterval _lastMoveTime;
+ CADisplayLink *_inertia;
 }
 - (instancetype)initWithFrame:(CGRect)f {
  if((self=[super initWithFrame:f])){self.multipleTouchEnabled=YES;self.backgroundColor=UIColor.clearColor;}
  return self;
 }
+- (void)out:(NSString*)line {if(self.emit)self.emit(line);}
 - (CGPoint)norm:(CGPoint)p {
  CGRect r=self.bounds;
  if(_videoSize.width>0&&_videoSize.height>0)r=AVMakeRectWithAspectRatioInsideRect(_videoSize,self.bounds);
@@ -189,7 +194,20 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
 }
 - (void)send:(char)c at:(CGPoint)p {
  CGPoint n=[self norm:p];
- if(self.emit)self.emit([NSString stringWithFormat:@"%c %.5f %.5f\n",c,n.x,n.y]);
+ [self out:[NSString stringWithFormat:@"%c %.5f %.5f\n",c,n.x,n.y]];
+}
+// Petit cercle lumineux qui confirme un geste (clic droit, clavier)
+- (void)ripple:(CGPoint)p color:(UIColor*)color {
+ CAShapeLayer *r=[CAShapeLayer layer];
+ r.path=[UIBezierPath bezierPathWithOvalInRect:CGRectMake(-30,-30,60,60)].CGPath;
+ r.position=p;r.fillColor=[color colorWithAlphaComponent:.25].CGColor;r.strokeColor=color.CGColor;r.lineWidth=2;
+ [self.layer addSublayer:r];
+ CABasicAnimation *g=[CABasicAnimation animationWithKeyPath:@"transform.scale"];g.fromValue=@.3;g.toValue=@1.2;
+ CABasicAnimation *f=[CABasicAnimation animationWithKeyPath:@"opacity"];f.fromValue=@1;f.toValue=@0;
+ CAAnimationGroup *grp=[CAAnimationGroup animation];grp.animations=@[g,f];grp.duration=.45;
+ grp.removedOnCompletion=NO;grp.fillMode=kCAFillModeForwards;
+ [CATransaction begin];[CATransaction setCompletionBlock:^{[r removeFromSuperlayer];}];
+ [r addAnimation:grp forKey:nil];[CATransaction commit];
 }
 - (NSArray<UITouch*>*)active:(UIEvent*)e {
  NSMutableArray *a=[NSMutableArray array];
@@ -201,40 +219,116 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  CGFloat x=0,y=0;for(UITouch *t in ts){CGPoint p=[t locationInView:self];x+=p.x;y+=p.y;}
  return CGPointMake(x/ts.count,y/ts.count);
 }
+- (CGFloat)spread:(NSArray<UITouch*>*)ts {
+ if(ts.count<2)return 0;
+ CGPoint a=[ts[0] locationInView:self],b=[ts[1] locationInView:self];
+ return hypot(a.x-b.x,a.y-b.y);
+}
+- (void)cancelLongPress {[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(longPress) object:nil];}
+- (void)longPress {
+ if(_mode!=1||_dragging)return;
+ _longFired=YES;
+ [self send:'R' at:_start];
+ [self ripple:_start color:[UIColor colorWithRed:.55 green:.75 blue:1 alpha:1]];
+}
+// Molette : 12 points de déplacement = 40 unités Windows (120 = un cran)
+- (void)scrollBy:(CGFloat)dy {
+ _scrollAcc+=dy;
+ int steps=(int)(_scrollAcc/12);
+ if(steps){_scrollAcc-=steps*12;[self out:[NSString stringWithFormat:@"W %d\n",steps*40]];}
+}
+- (void)stopInertia {[_inertia invalidate];_inertia=nil;}
+- (void)inertiaTick:(CADisplayLink*)link {
+ CGFloat dt=link.duration>0?link.duration:1.0/60;
+ [self scrollBy:_velocity*dt];
+ _velocity*=pow(.94,dt*60);
+ if(fabs(_velocity)<40)[self stopInertia];
+}
+
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
  (void)touches;
+ [self stopInertia];
  NSArray *a=[self active:e];
- if(_mode==0&&a.count==1){_mode=1;_dragging=NO;_primary=a[0];_start=_last=[a[0] locationInView:self];}
- else if(a.count>=2&&!(_mode==1&&_dragging)){_mode=2;_moved=NO;_centroid=[self centroid:a];_scrollRef=_centroid.y;_scrollAcc=0;_scrollTotal=0;}
+ if(a.count>=3){
+  [self cancelLongPress];
+  if(_mode==1&&_dragging)[self send:'U' at:_last];
+  _mode=3;_moved=NO;_centroidStart=[self centroid:a];_dragging=NO;
+ } else if(_mode==0&&a.count==1){
+  _mode=1;_dragging=NO;_longFired=NO;_primary=a[0];_start=_last=[a[0] locationInView:self];
+  [self performSelector:@selector(longPress) withObject:nil afterDelay:.55];
+ } else if(a.count==2&&_mode!=3&&!(_mode==1&&(_dragging||_longFired))){
+  [self cancelLongPress];
+  _mode=2;_moved=NO;_decided=NO;_pinching=NO;_velocity=0;
+  _centroid=_centroidStart=[self centroid:a];_scrollRef=_centroid.y;_scrollAcc=0;
+  _pinchRef=[self spread:a];_lastMoveTime=e.timestamp;
+ }
 }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
  (void)touches;
  NSArray *a=[self active:e];
  if(_mode==1&&_primary){
   CGPoint p=[_primary locationInView:self];
-  if(!_dragging&&hypot(p.x-_start.x,p.y-_start.y)>8){_dragging=YES;[self send:'D' at:_start];}
+  if(!_dragging&&!_longFired&&hypot(p.x-_start.x,p.y-_start.y)>8){[self cancelLongPress];_dragging=YES;[self send:'D' at:_start];}
   if(_dragging)[self send:'M' at:p];
   _last=p;
  } else if(_mode==2&&a.count>=2){
-  CGPoint c=[self centroid:a];_centroid=c;
-  CGFloat dy=c.y-_scrollRef;_scrollRef=c.y;_scrollAcc+=dy;_scrollTotal+=fabs(dy);
-  if(_scrollTotal>6)_moved=YES;
-  int steps=(int)(_scrollAcc/12);
-  if(steps){_scrollAcc-=steps*12;if(self.emit)self.emit([NSString stringWithFormat:@"W %d\n",steps*40]);}
+  CGPoint c=[self centroid:a];CGFloat d=[self spread:a];
+  if(!_decided){
+   CGFloat pinch=fabs(d-_pinchRef),pan=hypot(c.x-_centroidStart.x,c.y-_centroidStart.y);
+   if(pinch>24&&pinch>pan*1.2){_decided=YES;_pinching=YES;_moved=YES;_pinchRef=d;}
+   else if(pan>10){_decided=YES;_moved=YES;}
+  }
+  if(_decided&&_pinching){
+   // un cran de zoom tous les 12 % d'écartement
+   if(d>_pinchRef*1.12){_pinchRef=d;[self out:@"Z 1\n"];}
+   else if(d<_pinchRef/1.12){_pinchRef=d;[self out:@"Z -1\n"];}
+  } else if(_decided){
+   CGFloat dy=c.y-_scrollRef;_scrollRef=c.y;
+   NSTimeInterval dt=e.timestamp-_lastMoveTime;_lastMoveTime=e.timestamp;
+   if(dt>0)_velocity=.7*_velocity+.3*(dy/dt);
+   [self scrollBy:dy];
+  }
+  _centroid=c;
+ } else if(_mode==3&&a.count>=3){
+  CGPoint c=[self centroid:a];
+  if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>20)_moved=YES;
  }
 }
 - (void)finish:(UIEvent*)e cancelled:(BOOL)cancelled {
  if([self active:e].count>0)return; // on attend que tous les doigts soient levés
+ [self cancelLongPress];
  if(_mode==1){
   if(_dragging)[self send:'U' at:_last];
-  else if(!cancelled){[self send:'D' at:_start];[self send:'U' at:_start];}
- } else if(_mode==2&&!_moved&&!cancelled){
-  [self send:'R' at:_centroid];
+  else if(!cancelled&&!_longFired){[self send:'D' at:_start];[self send:'U' at:_start];}
+ } else if(_mode==2&&!cancelled){
+  if(!_moved)[self send:'R' at:_centroid];
+  else if(!_pinching&&fabs(_velocity)>300&&e.timestamp-_lastMoveTime<.08){
+   _inertia=[CADisplayLink displayLinkWithTarget:self selector:@selector(inertiaTick:)];
+   [_inertia addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+  }
+ } else if(_mode==3&&!_moved&&!cancelled){
+  [self ripple:_centroidStart color:UIColor.whiteColor];
+  if(self.isFirstResponder)[self resignFirstResponder];else [self becomeFirstResponder];
  }
  _mode=0;_dragging=NO;_primary=nil;
 }
 - (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {(void)touches;[self finish:e cancelled:NO];}
 - (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {(void)touches;[self finish:e cancelled:YES];}
+
+// --- Clavier : la vue elle-même reçoit la frappe -------------------------------------
+- (BOOL)canBecomeFirstResponder {return YES;}
+- (BOOL)hasText {return YES;}   // la touche Effacer reste toujours active
+- (void)insertText:(NSString*)text {
+ static NSCharacterSet *safe;
+ if(!safe)safe=[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~"];
+ NSString *enc=[text stringByAddingPercentEncodingWithAllowedCharacters:safe];
+ if(enc.length)[self out:[NSString stringWithFormat:@"T %@\n",enc]];
+}
+- (void)deleteBackward {[self out:@"K BACK\n"];}
+- (UIKeyboardAppearance)keyboardAppearance {return UIKeyboardAppearanceDark;}
+- (UITextAutocorrectionType)autocorrectionType {return UITextAutocorrectionTypeNo;}
+- (UITextAutocapitalizationType)autocapitalizationType {return UITextAutocapitalizationTypeNone;}
+- (UITextSpellCheckingType)spellCheckingType {return UITextSpellCheckingTypeNo;}
 @end
 
 #pragma mark - Écran d'accueil

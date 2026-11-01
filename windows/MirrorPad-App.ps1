@@ -1,10 +1,44 @@
 ﻿# MirrorPad pour Windows : icône dans la zone de notification, sans fenêtre de terminal.
 # Se lance via MirrorPad.vbs (double-clic). Réglages : %APPDATA%\MirrorPad\config.json
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -Namespace MirrorPad -Name Native -MemberDefinition @'
-[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
-[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-[DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace MirrorPad {
+  public static class Native {
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
+
+    [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Explicit)] struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+    [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION u; }
+    [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int size);
+
+    const uint KEYUP = 2, UNICODE = 4;
+    static void Key(ushort vk, ushort scan, uint flags) {
+      var i = new INPUT[1];
+      i[0].type = 1; i[0].u.ki.wVk = vk; i[0].u.ki.wScan = scan; i[0].u.ki.dwFlags = flags;
+      SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
+    }
+    public static void Press(ushort vk) { Key(vk, 0, 0); Key(vk, 0, KEYUP); }
+    // Tape un texte quelconque (accents, émojis…) ; retour à la ligne = Entrée, tabulation = Tab
+    public static void Text(string s) {
+      foreach (char c in s) {
+        if (c == '\n' || c == '\r') Press(0x0D);
+        else if (c == '\t') Press(0x09);
+        else { Key(0, c, UNICODE); Key(0, c, UNICODE | KEYUP); }
+      }
+    }
+    // Zoom : Ctrl maintenu + molette
+    public static void Zoom(int steps) {
+      Key(0x11, 0, 0);
+      mouse_event(0x800, 0, 0, steps * 120, UIntPtr.Zero);
+      Key(0x11, 0, KEYUP);
+    }
+  }
+}
 '@
 # Coordonnées en pixels réels sur chaque écran (indispensable pour placer la souris correctement à 200 %)
 try { [void][MirrorPad.Native]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
@@ -266,6 +300,9 @@ function Invoke-TouchLine([string]$line) {
     'U' { Release-Left }
     'R' { [MirrorPad.Native]::mouse_event(0x8, 0, 0, 0, [UIntPtr]::Zero); [MirrorPad.Native]::mouse_event(0x10, 0, 0, 0, [UIntPtr]::Zero) }
     'W' { [MirrorPad.Native]::mouse_event(0x800, 0, 0, [int]$p[1], [UIntPtr]::Zero) }
+    'Z' { [MirrorPad.Native]::Zoom([int]$p[1]) }
+    'T' { if ($p.Count -ge 2) { [MirrorPad.Native]::Text([System.Uri]::UnescapeDataString($p[1])) } }
+    'K' { switch ($p[1]) { 'BACK' { [MirrorPad.Native]::Press(0x08) } 'ENTER' { [MirrorPad.Native]::Press(0x0D) } } }
   }
 }
 
