@@ -71,7 +71,9 @@ namespace MirrorPad
             {"back",0x08},{"del",0x2E},{"ins",0x2D},{"home",0x24},{"end",0x23},{"pgup",0x21},{"pgdn",0x22},
             {"left",0x25},{"up",0x26},{"right",0x27},{"down",0x28},{"printscreen",0x2C},{"apps",0x5D},
             {"volup",0xAF},{"voldown",0xAE},{"mute",0xAD},{"playpause",0xB3},{"next",0xB0},{"prev",0xB1},{"stop",0xB2},
-            {"plus",0xBB},{"minus",0xBD} };
+            {"plus",0xBB},{"minus",0xBD},
+            {"num0",0x60},{"num1",0x61},{"num2",0x62},{"num3",0x63},{"num4",0x64},{"num5",0x65},{"num6",0x66},{"num7",0x67},{"num8",0x68},{"num9",0x69},
+            {"nummul",0x6A},{"numadd",0x6B},{"numsub",0x6D},{"numdec",0x6E},{"numdiv",0x6F} };
         static readonly string[] Modifiers = { "ctrl", "shift", "alt", "win" };
 
         public static bool Combo(string combo)

@@ -28,6 +28,10 @@ namespace MirrorPad
         readonly SynchronizationContext ui;
         readonly NotifyIcon notify = new NotifyIcon();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 1000 };
+        readonly System.Windows.Forms.Timer fgTimer = new System.Windows.Forms.Timer { Interval = 400 };   // Touch Bar : application active
+        HotkeyWindow hotkey;
+        string lastFg = "";
+        bool sleepRequested, proxLocked;   // verrouillage par proximité
         ToolStripMenuItem statusItem, versionItem, toggleItem, touchItem, startupItem, adminItem;
         Icon iconIdle, iconWaiting, iconConnected;
         Image baseImage;
@@ -70,7 +74,7 @@ namespace MirrorPad
             input.RestartStream = () => { restartRequested = true; streamer.Stop(); };
             input.Placed = PlaceVirtual;
             input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
-            input.Sleep = () => { Log.Write("iPad verrouillé"); lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
+            input.Sleep = () => { Log.Write("iPad verrouillé"); sleepRequested = true; lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
 
             BuildIcons(); BuildMenu();
@@ -79,6 +83,8 @@ namespace MirrorPad
             mic.Notify = msg => NotifyBoth(msg);
             input.Media = HandleMedia;
             clip = new ClipboardWatcher();
+            hotkey = new HotkeyWindow { Pressed = SwapWindow };
+            fgTimer.Tick += (s, e) => ForegroundTick(); fgTimer.Start();
             clip.TextCopied = t => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.Send("CB " + Uri.EscapeDataString(t)); };
             clip.ImageCopied = b => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.SendFrame(Session.ClipImage, b, 0, b.Length); };
             notify.Icon = iconIdle; notify.Visible = true;
@@ -185,7 +191,10 @@ namespace MirrorPad
             if (cfg.AutoUpdate && (ticks == 10 || ticks % 120 == 0)) ThreadPool.QueueUserWorkItem(_ => CheckUpdate(false));
             try { input.RefreshBounds(); } catch { }
             var s = session;
-            if (s != null && !s.IsClosed) lastAlive = DateTime.Now;
+            if (s != null && !s.IsClosed) { lastAlive = DateTime.Now; proxLocked = false; }
+            // verrouillage par proximité : l'iPad a disparu du réseau (emporté) sans s'être mis en veille
+            else if (cfg.ProximityLock && wanted && !sleepRequested && !proxLocked && lastAlive != DateTime.MinValue && (DateTime.Now - lastAlive).TotalSeconds > 12)
+            { proxLocked = true; Log.Write("iPad hors de portée : PC verrouillé"); LockWorkStation(); }
             // iPad absent depuis 20 s (éteint, hors Wi-Fi…) : on débranche l'écran virtuel
             else if (cfg.SleepWithIPad && !cfg.VirtualDetached && (DateTime.Now - lastAlive).TotalSeconds > 20 && lastAlive != DateTime.MinValue)
             { lastAlive = DateTime.MinValue; ThreadPool.QueueUserWorkItem(_ => SleepVirtual(true)); }
@@ -251,6 +260,7 @@ namespace MirrorPad
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
                 input.ResetDiagnostics();
+                sleepRequested = false; lastFg = "";   // la Touch Bar est renvoyée à la nouvelle session
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
                 if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); input.Tapped = focus.Tapped; focus.Start(); }
@@ -278,6 +288,33 @@ namespace MirrorPad
         }
 
         // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
+        // ---------- Touch Bar contextuelle ----------
+        void ForegroundTick()
+        {
+            var s = session;
+            if (s == null || s.IsClosed) return;
+            IntPtr h; var fg = TouchBar.ForegroundProcess(out h);
+            if (fg == null || fg.Equals("explorer", StringComparison.OrdinalIgnoreCase) && lastFg.Length > 0 && IsShell(h)) return;   // clic sur le bureau : on garde la barre
+            if (fg == lastFg) return;
+            lastFg = fg;
+            s.Send(TouchBar.LineFor(fg));
+        }
+        static bool IsShell(IntPtr h)
+        {
+            var c = new StringBuilder(64); GetClassName(h, c, 64);
+            return c.ToString() == "Shell_TrayWnd" || c.ToString() == "Progman" || c.ToString() == "WorkerW";
+        }
+
+        // Fenêtre active -> écran de l'iPad (agrandie), ou retour (geste 3 doigts vers le haut, Touch Bar, Ctrl+Alt+I)
+        void SwapWindow()
+        {
+            var where = WindowMover.Swap(input.Bounds);
+            if (where != null) Log.Write("fenêtre envoyée sur l'" + (where == "iPad" ? "iPad" : where));
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool LockWorkStation();
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+
         // Place l'écran de l'iPad à gauche, à droite ou au-dessus de l'écran principal (réglage « Position »)
         void PlaceVirtual()
         {
@@ -393,6 +430,7 @@ namespace MirrorPad
 
         void HandleMedia(string[] p)
         {
+            if (p[0] == "WIN") { Post(SwapWindow); return; }
             if (p[0] == "SND")
             {
                 // son du PC vers les haut-parleurs de l'iPad

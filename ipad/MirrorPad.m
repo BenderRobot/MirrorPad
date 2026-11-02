@@ -427,6 +427,7 @@ done:
 @property(nonatomic) CGSize videoSize;
 @property(nonatomic) BOOL longPressEnabled,inertiaEnabled;
 @property(nonatomic,copy) void (^onFourFingerTap)(void);
+@property(nonatomic,copy) void (^onThreeFingerSwipeUp)(void);   // envoie la fenêtre active du PC sur l'iPad (ou la ramène)
 @property(nonatomic) NSInteger inputMode;   // 0 souris, 1 tactile Windows natif, 2 stylet
 @property(nonatomic) BOOL penEraser;
 @end
@@ -613,6 +614,7 @@ static const CGFloat MPScrollGain=2.4;
  } else if((_mode==3||_mode==4)&&a.count>=3){
   CGPoint c=[self centroid:a];
   if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>20)_moved=YES;
+  _centroid=c;
  }
 }
 - (void)finish:(UIEvent*)e cancelled:(BOOL)cancelled {
@@ -638,6 +640,8 @@ static const CGFloat MPScrollGain=2.4;
   }
  } else if(_mode==4&&!_moved&&!cancelled){
   if(self.onFourFingerTap)self.onFourFingerTap();
+ } else if(_mode==3&&_moved&&!cancelled&&_centroidStart.y-_centroid.y>90&&fabs(_centroid.x-_centroidStart.x)<_centroidStart.y-_centroid.y){
+  if(self.onThreeFingerSwipeUp)self.onThreeFingerSwipeUp();
  } else if(_mode==3&&!_moved&&!cancelled){
   [self ripple:_centroidStart color:UIColor.whiteColor];
   if(self.isFirstResponder)[self resignFirstResponder];else [self becomeFirstResponder];
@@ -1045,7 +1049,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 
 static NSUserDefaults *MPDefaults(void){
  NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
- [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES,@"pcSound":@YES}];
+ [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES,@"pcSound":@YES,@"touchBar":@YES,@"touchBarFolded":@NO}];
  return d;
 }
 static NSString *MPAgo(NSDate *date){
@@ -1070,7 +1074,7 @@ static NSString *MPAgo(NSDate *date){
 @end
 @implementation MPSettingsPanel {
  UISegmentedControl *_fps,*_quality,*_inputMode,*_penTool;
- UISwitch *_longPress,*_inertia,*_hud,*_clip,*_sound;
+ UISwitch *_longPress,*_inertia,*_hud,*_clip,*_sound,*_bar;
  UIStackView *_history,*_paired;
 }
 static const int MPQualities[3]={6,12,20};
@@ -1146,7 +1150,7 @@ static const int MPQualities[3]={6,12,20};
  sensors.distribution=UIStackViewDistributionFillEqually;sensors.spacing=10;
  _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
  _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
- _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];_sound=[self toggle];
+ _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];_sound=[self toggle];_bar=[self toggle];
  UILabel *note=MPLabel(@"La qualité est appliquée au PC dès qu'il est connecté.",13,UIFontWeightRegular,.6,0);
  _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
  _paired=[UIStackView new];_paired.axis=UILayoutConstraintAxisVertical;_paired.spacing=8;_paired.alignment=UIStackViewAlignmentLeading;
@@ -1157,7 +1161,7 @@ static const int MPQualities[3]={6,12,20};
    [self section:@"PARTAGE"],[self row:@"Presse-papiers partagé avec le PC" control:_clip],[self row:@"Son du PC sur l'iPad" control:_sound],
    [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
    [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
-   [self section:@"AFFICHAGE"],[self row:@"Indicateur de performance" control:_hud],
+   [self section:@"AFFICHAGE"],[self row:@"Touch Bar (raccourcis de l'appli active)" control:_bar],[self row:@"Indicateur de performance" control:_hud],
    [self section:@"DERNIERS PC"],_history,
    [self section:@"SÉCURITÉ"],_paired]];
  st.axis=UILayoutConstraintAxisVertical;st.spacing=12;st.translatesAutoresizingMaskIntoConstraints=NO;
@@ -1189,7 +1193,7 @@ static const int MPQualities[3]={6,12,20};
  _fps.selectedSegmentIndex=[d integerForKey:@"fps"]>=60?1:0;
  NSInteger m=[d integerForKey:@"mbps"];_quality.selectedSegmentIndex=m<=8?0:(m<=15?1:2);
  _inputMode.selectedSegmentIndex=[d integerForKey:@"inputMode"];_penTool.selectedSegmentIndex=[d boolForKey:@"penEraser"]?1:0;
- _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_sound.on=[d boolForKey:@"pcSound"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
+ _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_sound.on=[d boolForKey:@"pcSound"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];_bar.on=[d boolForKey:@"touchBar"];
  for(UIView *v in _history.arrangedSubviews){[_history removeArrangedSubview:v];[v removeFromSuperview];}
  NSArray *h=[d arrayForKey:@"history"];
  if(!h.count)[_history addArrangedSubview:MPLabel(@"Aucun PC pour l'instant.",15,UIFontWeightRegular,.6,0)];
@@ -1218,7 +1222,7 @@ static const int MPQualities[3]={6,12,20};
 }
 - (void)togglesChanged {
  NSUserDefaults *d=MPDefaults();
- [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_clip.on forKey:@"clipboard"];[d setBool:_sound.on forKey:@"pcSound"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
+ [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_clip.on forKey:@"clipboard"];[d setBool:_sound.on forKey:@"pcSound"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];[d setBool:_bar.on forKey:@"touchBar"];
  if(self.onChange)self.onChange();
 }
 - (void)showIn:(UIView*)parent {
@@ -1465,6 +1469,157 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
 @end
 
+// Touch Bar contextuelle : bande de raccourcis en bas de l'écran, envoyée par le PC selon l'application active
+@interface MPTouchBar : UIView
+@property(nonatomic,copy) void (^onAction)(NSString *keys);   // « ctrl+s », « f5 », « @swap », « @numpad »…
+@property(nonatomic) BOOL collapsed;
+- (void)setTitle:(NSString*)title items:(NSArray<NSArray<NSString*>*>*)items;
+@end
+@implementation MPTouchBar { UIVisualEffectView *_blur; UILabel *_title; UIScrollView *_scroll; UIStackView *_stack; UIButton *_fold,*_tab; NSArray *_items; }
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ _blur=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+ _blur.layer.cornerRadius=18;_blur.clipsToBounds=YES;_blur.layer.borderWidth=1;_blur.layer.borderColor=[UIColor colorWithWhite:1 alpha:.18].CGColor;
+ [self addSubview:_blur];
+ CAGradientLayer *g=[CAGradientLayer layer];g.colors=@[(id)MPRGB(0x16C6FF,.22).CGColor,(id)MPRGB(0x3B5BFF,.18).CGColor,(id)MPRGB(0x7A2EF6,.24).CGColor];
+ g.startPoint=CGPointMake(0,.5);g.endPoint=CGPointMake(1,.5);g.frame=CGRectMake(0,0,3000,80);[_blur.contentView.layer addSublayer:g];
+ _title=MPLabel(@"",13,UIFontWeightSemibold,.75,.3);[_blur.contentView addSubview:_title];
+ _scroll=[UIScrollView new];_scroll.showsHorizontalScrollIndicator=NO;[_blur.contentView addSubview:_scroll];
+ _stack=[UIStackView new];_stack.spacing=8;[_scroll addSubview:_stack];
+ _fold=[UIButton buttonWithType:UIButtonTypeSystem];[_fold setTitle:@"⌄" forState:UIControlStateNormal];
+ _fold.titleLabel.font=[UIFont systemFontOfSize:24 weight:UIFontWeightBold];[_fold setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ [_fold addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[_blur.contentView addSubview:_fold];
+ _tab=MPGlassButton(@"⌃",20);_tab.layer.cornerRadius=16;_tab.hidden=YES;
+ [_tab addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[self addSubview:_tab];
+ return self;
+}
+- (UIView*)hitTest:(CGPoint)p withEvent:(UIEvent*)e {UIView *v=[super hitTest:p withEvent:e];return v==self?nil:v;}   // le reste de la bande laisse passer le toucher
+- (void)toggle {
+ self.collapsed=!self.collapsed;[MPDefaults() setBool:self.collapsed forKey:@"touchBarFolded"];
+ [UIView animateWithDuration:.25 animations:^{[self layoutSubviews];}];
+}
+- (void)setCollapsed:(BOOL)c {_collapsed=c;_blur.alpha=c?0:1;_tab.hidden=!c;[self setNeedsLayout];}
+- (void)layoutSubviews {
+ [super layoutSubviews];
+ CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+ _blur.frame=CGRectMake(10,_collapsed?h:4,w-20,h-12);
+ _tab.frame=CGRectMake(w-56,h-40,44,32);
+ CGFloat bh=_blur.bounds.size.height;
+ _title.frame=CGRectMake(16,0,120,bh);
+ _fold.frame=CGRectMake(_blur.bounds.size.width-48,0,44,bh);
+ _scroll.frame=CGRectMake(130,6,_blur.bounds.size.width-130-52,bh-12);
+ CGSize sz=[_stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+ _stack.frame=CGRectMake(0,0,fmax(sz.width,1),_scroll.bounds.size.height);
+ _scroll.contentSize=_stack.frame.size;
+}
+- (void)setTitle:(NSString*)title items:(NSArray<NSArray<NSString*>*>*)items {
+ _title.text=title.uppercaseString;_items=items;
+ for(UIView *v in _stack.arrangedSubviews){[_stack removeArrangedSubview:v];[v removeFromSuperview];}
+ for(NSUInteger i=0;i<items.count;i++){
+  UIButton *b=MPGlassButton(items[i][0],15);b.tag=(NSInteger)i;b.layer.cornerRadius=12;
+  b.contentEdgeInsets=UIEdgeInsetsMake(0,14,0,14);
+  if([items[i][1] hasPrefix:@"@"])b.backgroundColor=MPRGB(0x3B5BFF,.45);
+  [b addTarget:self action:@selector(press:) forControlEvents:UIControlEventTouchUpInside];
+  [_stack addArrangedSubview:b];
+ }
+ [self setNeedsLayout];
+ // petit « flash » quand l'application change
+ _title.alpha=.2;[UIView animateWithDuration:.4 animations:^{self->_title.alpha=.75;}];
+}
+- (void)press:(UIButton*)b {
+ if((NSUInteger)b.tag>=_items.count)return;
+ if(self.onAction)self.onAction(_items[(NSUInteger)b.tag][1]);
+ [UIView animateWithDuration:.08 animations:^{b.transform=CGAffineTransformMakeScale(.92,.92);}
+  completion:^(BOOL d){(void)d;[UIView animateWithDuration:.18 animations:^{b.transform=CGAffineTransformIdentity;}];}];
+}
+@end
+
+// Pavé numérique + calculatrice : les touches partent vers le PC (Excel…), le calcul local s'affiche en haut,
+// « Entrée » archive la ligne dans l'historique ; toucher un résultat l'envoie au PC
+@interface MPNumpadView : UIView
+@property(nonatomic,copy) void (^emit)(NSString *line);
+- (void)showIn:(UIView*)parent;
+@end
+@implementation MPNumpadView { CAGradientLayer *_bg; UILabel *_expr,*_result; UIStackView *_history; NSMutableString *_line; }
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ _bg=MPBackdrop();[self.layer addSublayer:_bg];_line=[NSMutableString string];
+ UILabel *title=MPLabel(@"Pavé numérique",30,UIFontWeightBold,1,-.4);
+ UIButton *close=MPGlassButton(@"Fermer",16);[close addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+ UIStackView *head=[[UIStackView alloc] initWithArrangedSubviews:@[title,close]];head.distribution=UIStackViewDistributionEqualSpacing;head.alignment=UIStackViewAlignmentCenter;
+ _expr=MPLabel(@" ",28,UIFontWeightMedium,.9,0);_expr.textAlignment=NSTextAlignmentRight;
+ _result=MPLabel(@" ",20,UIFontWeightRegular,.6,0);_result.textAlignment=NSTextAlignmentRight;
+ NSArray *rows=@[@[@"C",@"÷",@"×",@"⌫"],@[@"7",@"8",@"9",@"−"],@[@"4",@"5",@"6",@"+"],@[@"1",@"2",@"3",@"Tab"],@[@"0",@".",@"=",@"Entrée"]];
+ UIStackView *grid=[UIStackView new];grid.axis=UILayoutConstraintAxisVertical;grid.spacing=10;grid.distribution=UIStackViewDistributionFillEqually;
+ for(NSArray *r in rows){
+  UIStackView *row=[UIStackView new];row.spacing=10;row.distribution=UIStackViewDistributionFillEqually;
+  for(NSString *k in r){UIButton *b=MPGlassButton(k,26);[b setTitle:k forState:UIControlStateNormal];
+   if([@"Entrée=" rangeOfString:k].location!=NSNotFound)b.backgroundColor=MPRGB(0x3B5BFF,.5);
+   [b addTarget:self action:@selector(key:) forControlEvents:UIControlEventTouchUpInside];[row addArrangedSubview:b];}
+  [grid addArrangedSubview:row];
+ }
+ UILabel *hTitle=MPLabel(@"HISTORIQUE (toucher = envoyer au PC)",12,UIFontWeightSemibold,.55,.4);
+ _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
+ UIStackView *right=[[UIStackView alloc] initWithArrangedSubviews:@[_expr,_result,hTitle,_history,[UIView new]]];right.axis=UILayoutConstraintAxisVertical;right.spacing=10;
+ UIStackView *body=[[UIStackView alloc] initWithArrangedSubviews:@[grid,right]];body.spacing=24;body.distribution=UIStackViewDistributionFillEqually;
+ UIStackView *all=[[UIStackView alloc] initWithArrangedSubviews:@[head,body]];all.axis=UILayoutConstraintAxisVertical;all.spacing=20;
+ all.translatesAutoresizingMaskIntoConstraints=NO;[self addSubview:all];
+ [NSLayoutConstraint activateConstraints:@[[all.topAnchor constraintEqualToAnchor:self.topAnchor constant:24],[all.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-24],
+  [all.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:28],[all.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28]]];
+ return self;
+}
+- (void)layoutSubviews {[super layoutSubviews];[CATransaction begin];[CATransaction setDisableActions:YES];_bg.frame=self.bounds;[CATransaction commit];}
+- (void)send:(NSString*)combo {if(self.emit)self.emit([NSString stringWithFormat:@"KS %@\n",combo]);}
+- (NSString*)evaluate {
+ NSString *e=[[[_line stringByReplacingOccurrencesOfString:@"×" withString:@"*"] stringByReplacingOccurrencesOfString:@"÷" withString:@"/"] stringByReplacingOccurrencesOfString:@"−" withString:@"-"];
+ if(!e.length)return nil;
+ unichar last=[e characterAtIndex:e.length-1];if(last=='+'||last=='-'||last=='*'||last=='/'||last=='.')return nil;
+ @try {
+  // nombres entiers -> décimaux, sinon NSExpression ferait une division entière (1/2 = 0)
+  NSRegularExpression *ints=[NSRegularExpression regularExpressionWithPattern:@"(?<![0-9.])([0-9]+)(?![0-9.])" options:0 error:nil];
+  e=[ints stringByReplacingMatchesInString:e options:0 range:NSMakeRange(0,e.length) withTemplate:@"$1.0"];
+  NSExpression *x=[NSExpression expressionWithFormat:e];
+  NSNumber *n=[x expressionValueWithObject:nil context:nil];
+  if(!n||isnan(n.doubleValue)||isinf(n.doubleValue))return nil;
+  NSNumberFormatter *f=[NSNumberFormatter new];f.maximumFractionDigits=8;f.minimumIntegerDigits=1;f.decimalSeparator=@".";f.usesGroupingSeparator=NO;
+  return [f stringFromNumber:n];
+ } @catch(NSException *ex){return nil;}
+}
+- (void)refresh {_expr.text=_line.length?_line:@" ";NSString *r=[self evaluate];_result.text=r?[@"= " stringByAppendingString:r]:@" ";}
+- (void)key:(UIButton*)b {
+ NSString *k=[b titleForState:UIControlStateNormal];
+ static NSDictionary *map;
+ if(!map)map=@{@"0":@"num0",@"1":@"num1",@"2":@"num2",@"3":@"num3",@"4":@"num4",@"5":@"num5",@"6":@"num6",@"7":@"num7",@"8":@"num8",@"9":@"num9",
+               @"+":@"numadd",@"−":@"numsub",@"×":@"nummul",@"÷":@"numdiv",@".":@"numdec",@"Tab":@"tab",@"⌫":@"back"};
+ if([k isEqualToString:@"C"]){[_line setString:@""];}
+ else if([k isEqualToString:@"="]){NSString *r=[self evaluate];if(r)[self archive:r];}
+ else if([k isEqualToString:@"Entrée"]){[self send:@"enter"];NSString *r=[self evaluate];if(r)[self archive:r];else [_line setString:@""];}
+ else {
+  if(map[k])[self send:map[k]];
+  if([k isEqualToString:@"⌫"]){if(_line.length)[_line deleteCharactersInRange:NSMakeRange(_line.length-1,1)];}
+  else if([k isEqualToString:@"Tab"])[_line setString:@""];
+  else [_line appendString:k];
+ }
+ [self refresh];
+}
+- (void)archive:(NSString*)r {
+ UIButton *h=[UIButton buttonWithType:UIButtonTypeSystem];
+ [h setTitle:[NSString stringWithFormat:@"%@ = %@",_line,r] forState:UIControlStateNormal];h.accessibilityValue=r;
+ h.titleLabel.font=[UIFont monospacedDigitSystemFontOfSize:18 weight:UIFontWeightMedium];[h setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ h.contentHorizontalAlignment=UIControlContentHorizontalAlignmentRight;
+ [h addTarget:self action:@selector(sendResult:) forControlEvents:UIControlEventTouchUpInside];
+ [_history insertArrangedSubview:h atIndex:0];
+ while(_history.arrangedSubviews.count>8){UIView *v=_history.arrangedSubviews.lastObject;[_history removeArrangedSubview:v];[v removeFromSuperview];}
+ [_line setString:@""];
+}
+- (void)sendResult:(UIButton*)b {if(self.emit)self.emit([NSString stringWithFormat:@"T %@\n",MPEsc(b.accessibilityValue)]);}
+- (void)showIn:(UIView*)parent {
+ self.frame=parent.bounds;self.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ self.alpha=0;[parent addSubview:self];[UIView animateWithDuration:.3 animations:^{self.alpha=1;}];
+}
+- (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
+@end
+
 // Écran de la webcam : aperçu, changement de caméra ; « Masquer » laisse la webcam tourner
 @interface MPCameraView : UIView
 @property(nonatomic,copy) void (^onSwitch)(void);
@@ -1571,6 +1726,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  int _liveMbps,_saturation;   // envoyés par le PC chaque seconde (débit adaptatif)
  BOOL _autoKb;                // clavier ouvert parce que le PC a signalé une zone de saisie
  MPSpeaker *_speaker;         // son du PC
+ MPTouchBar *_bar;            // Touch Bar contextuelle
  BOOL _soundOn;               // son demandé au PC pour cette connexion
  CGRect _fieldNorm;           // zone de saisie (coordonnées 0..1 de l'écran du PC)
  CGFloat _kbHeight;           // hauteur du clavier affiché
@@ -1599,10 +1755,23 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  __weak typeof(self) w=self;
  _touch.emit=^(NSString *line){[weakInput send:line];};
  _touch.onFourFingerTap=^{[w showSettings];};
+ _touch.onThreeFingerSwipeUp=^{[weakInput send:@"WIN SWAP\n"];};
  [self.view addSubview:_touch];
 
  _hud=[MPHud new];_hud.translatesAutoresizingMaskIntoConstraints=NO;_hud.hidden=YES;
  [self.view addSubview:_hud];
+
+ // Touch Bar contextuelle (en bas) : les boutons changent avec l'application active du PC
+ _bar=[[MPTouchBar alloc] initWithFrame:CGRectMake(0,self.view.bounds.size.height-74,self.view.bounds.size.width,74)];
+ _bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;_bar.hidden=YES;
+ _bar.collapsed=[MPDefaults() boolForKey:@"touchBarFolded"];
+ [_bar setTitle:@"Bureau" items:@[@[@"Fenêtre ⇄ iPad",@"@swap"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]]];
+ _bar.onAction=^(NSString *keys){
+  if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
+  else if([keys isEqualToString:@"@numpad"])[w showNumpad];
+  else [weakInput send:[NSString stringWithFormat:@"KS %@\n",MPEsc(keys)]];
+ };
+ [self.view addSubview:_bar];
  [NSLayoutConstraint activateConstraints:@[
   [_hud.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:14],[_hud.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-14]]];
 
@@ -1702,6 +1871,14 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   }
  } else if([k isEqualToString:@"MSG"]&&p.count>=2){
   [self showNotice:@"MirrorPad" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
+ } else if([k isEqualToString:@"TB"]&&p.count>=2){
+  // Touch Bar : « TB <titre> <libellé|touches>… » (encodés)
+  NSMutableArray *items=[NSMutableArray array];
+  for(NSUInteger i=2;i<p.count;i++){
+   NSString *it=[p[i] stringByRemovingPercentEncoding];NSRange r=[it rangeOfString:@"|" options:NSBackwardsSearch];
+   if(r.location!=NSNotFound)[items addObject:@[[it substringToIndex:r.location],[it substringFromIndex:r.location+1]]];
+  }
+  [_bar setTitle:[p[1] stringByRemovingPercentEncoding]?:@"" items:items];
  } else if([k isEqualToString:@"SC"]){
   // liste des raccourcis du PC : « libellé|touches » encodés, séparés par des espaces
   NSMutableArray *items=[NSMutableArray array];
@@ -1745,6 +1922,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _touch.penEraser=[d boolForKey:@"penEraser"];
  _dock.hidden=!_streaming;
  _hud.hidden=![d boolForKey:@"hud"]||!_streaming;
+ _bar.hidden=![d boolForKey:@"touchBar"]||!_streaming||_kbHeight>0;   // masquée pendant la saisie au clavier
 }
 - (void)showSettings {
  if(_touch.isFirstResponder)[_touch resignFirstResponder];
@@ -1766,6 +1944,12 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  t.emit=^(NSString *l){[in send:l];};
  t.onKeyboard=^{[w showKeyboard];};
  [t showIn:self.view];
+}
+- (void)showNumpad {
+ MPNumpadView *v=[MPNumpadView new];
+ __weak MPSecureServer *in=_input;
+ v.emit=^(NSString *l){[in send:l];};
+ [v showIn:self.view];
 }
 - (void)showShortcuts {
  MPShortcutsView *v=[MPShortcutsView new];
@@ -1801,9 +1985,9 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)keyboardFrame:(NSNotification*)n {
  CGRect f=[self.view convertRect:[n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue] fromView:nil];
  _kbHeight=fmax(0,CGRectGetMaxY(self.view.bounds)-CGRectGetMinY(f));
- [self applyKeyboardShift:YES];
+ [self applyKeyboardShift:YES];[self applyPreferences];
 }
-- (void)keyboardHide:(NSNotification*)n {(void)n;_kbHeight=0;_autoKb=NO;[self applyKeyboardShift:YES];}
+- (void)keyboardHide:(NSNotification*)n {(void)n;_kbHeight=0;_autoKb=NO;[self applyKeyboardShift:YES];[self applyPreferences];}
 // Remonte l'image (et la zone tactile) juste assez pour que la zone de saisie reste visible au-dessus du clavier
 - (void)applyKeyboardShift:(BOOL)animated {
  CGFloat dy=0;

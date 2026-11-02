@@ -55,7 +55,8 @@ namespace MirrorPad
         [DataMember] public bool VirtualDetached;
         [DataMember] public string ScreenSide;     // position de l'écran de l'iPad : "" (ne pas toucher), left, right, above
         [DataMember] public bool PreferUsb;        // passer par le câble USB quand l'iPad est branché
-        [DataMember] public bool AutoKeyboard;     // ouvrir le clavier de l'iPad quand on touche une zone de saisie   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
+        [DataMember] public bool AutoKeyboard;
+        [DataMember] public bool ProximityLock;    // verrouiller le PC quand l'iPad s'éloigne (connexion perdue sans veille)     // ouvrir le clavier de l'iPad quand on touche une zone de saisie   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
 
         public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MirrorPad");
         static string FilePath { get { return Path.Combine(Dir, "config.json"); } }

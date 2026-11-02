@@ -28,7 +28,7 @@ namespace MirrorPad
     public class SettingsForm : Form
     {
         readonly Config cfg;
-        CheckBox disc, auto, sleep, clip, usb, kb; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc, side; ListBox paired;
+        CheckBox disc, auto, sleep, clip, usb, kb, prox; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc, side; ListBox paired;
         public Action InstallMissing;   // télécharge et lance MirrorPad-Setup.exe
         static readonly string[] SideKeys = { "right", "left", "above", "" };
         readonly string[] encKeys;
@@ -85,7 +85,8 @@ namespace MirrorPad
             auto = new CheckBox { Text = "Se connecter au lancement", Checked = c.AutoConnect, Location = new Point(16, y), AutoSize = true }; Controls.Add(auto); y += 30;
             sleep = new CheckBox { Text = "Retirer l'écran virtuel quand l'iPad est verrouillé", Checked = c.SleepWithIPad, Location = new Point(16, y), AutoSize = true }; Controls.Add(sleep); y += 30;
             clip = new CheckBox { Text = "Partager le presse-papiers avec l'iPad", Checked = c.ShareClipboard, Location = new Point(16, y), AutoSize = true }; Controls.Add(clip); y += 30;
-            kb = new CheckBox { Text = "Ouvrir le clavier de l'iPad sur les zones de saisie", Checked = c.AutoKeyboard, Location = new Point(16, y), AutoSize = true }; Controls.Add(kb); y += 40;
+            kb = new CheckBox { Text = "Ouvrir le clavier de l'iPad sur les zones de saisie", Checked = c.AutoKeyboard, Location = new Point(16, y), AutoSize = true }; Controls.Add(kb); y += 30;
+            prox = new CheckBox { Text = "Verrouiller le PC quand l'iPad s'éloigne", Checked = c.ProximityLock, Location = new Point(16, y), AutoSize = true }; Controls.Add(prox); y += 40;
 
             Controls.Add(new Label { Text = "iPad appairés", Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(16, y), AutoSize = true }); y += 26;
             paired = new ListBox { Location = new Point(16, y), Size = new Size(280, 90) };
@@ -130,7 +131,7 @@ namespace MirrorPad
             cfg.AutoDiscover = disc.Checked; cfg.IPad = ip.Text.Trim(); cfg.Output = (int)output.Value;
             cfg.Fps = int.Parse((string)fps.SelectedItem); cfg.Mbps = (int)mbps.Value;
             cfg.Encoder = encKeys[enc.SelectedIndex]; cfg.DetectedEncoder = ""; cfg.AutoConnect = auto.Checked; cfg.SleepWithIPad = sleep.Checked; cfg.ShareClipboard = clip.Checked;
-            cfg.ScreenSide = SideKeys[Math.Max(0, side.SelectedIndex)]; cfg.PreferUsb = usb.Checked; cfg.AutoKeyboard = kb.Checked;
+            cfg.ScreenSide = SideKeys[Math.Max(0, side.SelectedIndex)]; cfg.PreferUsb = usb.Checked; cfg.AutoKeyboard = kb.Checked; cfg.ProximityLock = prox.Checked;
             cfg.Save();
             return true;
         }
