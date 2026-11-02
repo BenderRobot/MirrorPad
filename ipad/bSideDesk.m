@@ -1,4 +1,4 @@
-// MirrorPad — reçoit un flux H.264 (conteneur FLV sur TCP) envoyé par le PC
+// bSideDesk — reçoit un flux H.264 (conteneur FLV sur TCP) envoyé par le PC
 // et l'affiche en plein écran. Décodage matériel via AVSampleBufferDisplayLayer (iOS 8+).
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -108,11 +108,11 @@ static uint32_t MPBE32(const uint8_t *p){return (uint32_t)p[0]<<24|MPBE24(p+1);}
  if(count<2)return;
  CMVideoFormatDescriptionRef f=NULL;
  OSStatus st=CMVideoFormatDescriptionCreateFromH264ParameterSets(kCFAllocatorDefault,count,ps,sz,lenSize,&f);
- if(st!=noErr){NSLog(@"MirrorPad: SPS/PPS refusés (%d)",(int)st);return;}
+ if(st!=noErr){NSLog(@"bSideDesk: SPS/PPS refusés (%d)",(int)st);return;}
  if(_format)CFRelease(_format);
  _format=f;
  CMVideoDimensions d=CMVideoFormatDescriptionGetDimensions(f);
- NSLog(@"MirrorPad: flux %dx%d",d.width,d.height);
+ NSLog(@"bSideDesk: flux %dx%d",d.width,d.height);
  if(self.onSize)self.onSize(CGSizeMake(d.width,d.height));
 }
 - (void)emit:(const uint8_t*)p length:(size_t)n {
@@ -311,7 +311,7 @@ static NSString *MPDeviceId(void){
    if(CFAbsoluteTimeGetCurrent()-start>10||poll(&p,1,1000)<0)goto done;
    continue;
   }
-  NSLog(@"MirrorPad: échec TLS %d",(int)st);goto done;
+  NSLog(@"bSideDesk: échec TLS %d",(int)st);goto done;
  }
  if(!fp)goto done;
 
@@ -751,7 +751,7 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
  _front=front;
  AVCaptureDevice *dev=[AVCaptureDevice defaultDeviceWithDeviceType:AVCaptureDeviceTypeBuiltInWideAngleCamera mediaType:AVMediaTypeVideo position:front?AVCaptureDevicePositionFront:AVCaptureDevicePositionBack];
  NSError *err=nil;AVCaptureDeviceInput *in=dev?[AVCaptureDeviceInput deviceInputWithDevice:dev error:&err]:nil;
- if(!in){NSLog(@"MirrorPad: caméra indisponible %@",err);return NO;}
+ if(!in){NSLog(@"bSideDesk: caméra indisponible %@",err);return NO;}
  _session=[AVCaptureSession new];
  if([_session canSetSessionPreset:AVCaptureSessionPreset1280x720])_session.sessionPreset=AVCaptureSessionPreset1280x720;
  if(![_session canAddInput:in])return NO;
@@ -759,7 +759,7 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
  AVCaptureVideoDataOutput *out=[AVCaptureVideoDataOutput new];
  out.videoSettings=@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)};
  out.alwaysDiscardsLateVideoFrames=YES;
- _q=dispatch_queue_create("mirrorpad.camera",DISPATCH_QUEUE_SERIAL);
+ _q=dispatch_queue_create("bsidedesk.camera",DISPATCH_QUEUE_SERIAL);
  [out setSampleBufferDelegate:self queue:_q];
  if(![_session canAddOutput:out])return NO;
  [_session addOutput:out];
@@ -783,7 +783,7 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
  if(!_vt)return;
  BOOL (^can)(void)=self.canSend;
  if(can&&!can()){   // file d'envoi pleine : on n'encode pas, et la prochaine image envoyée sera une image clé
-  _needKey=YES;if(++_skipped%30==1)NSLog(@"MirrorPad: webcam, réseau saturé, images sautées (%lu)",(unsigned long)_skipped);
+  _needKey=YES;if(++_skipped%30==1)NSLog(@"bSideDesk: webcam, réseau saturé, images sautées (%lu)",(unsigned long)_skipped);
   return;
  }
  CFDictionaryRef props=NULL;
@@ -886,7 +886,7 @@ static void MPSpeakerCB(void *ud,AudioQueueRef q,AudioQueueBufferRef b){
   if(out.frameLength&&s.onPCM)s.onPCM([NSData dataWithBytes:out.int16ChannelData[0] length:out.frameLength*2]);
  }];
  [_engine prepare];
- if(![_engine startAndReturnError:&err]){NSLog(@"MirrorPad: micro %@",err);[self stop];return NO;}
+ if(![_engine startAndReturnError:&err]){NSLog(@"bSideDesk: micro %@",err);[self stop];return NO;}
  _running=YES;
  return YES;
 }
@@ -964,7 +964,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 
  // Textes
  UILabel *eyebrow=MPLabel(@"ÉCRAN SUPPLÉMENTAIRE",13,UIFontWeightSemibold,.78,3);
- UILabel *title=MPLabel(@"MirrorPad",64,UIFontWeightBold,1,-1.2);
+ UILabel *title=MPLabel(@"bSideDesk",64,UIFontWeightBold,1,-1.2);
  UILabel *subtitle=MPLabel(@"Votre iPad, un écran de plus pour votre PC.",21,UIFontWeightRegular,.86,0);
 
  // Pastille d'état avec point qui pulse
@@ -993,7 +993,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _addressLabel.textColor=UIColor.whiteColor;_addressLabel.adjustsFontSizeToFitWidth=YES;_addressLabel.minimumScaleFactor=.6;
  UIView *sep=[UIView new];sep.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];
  [sep.heightAnchor constraintEqualToConstant:1].active=YES;
- UILabel *hint=MPLabel([NSString stringWithFormat:@"Port %d  ·  Ouvrez MirrorPad sur le PC, la connexion est automatique.",MP_PORT],15,UIFontWeightRegular,.80,0);
+ UILabel *hint=MPLabel([NSString stringWithFormat:@"Port %d  ·  Ouvrez bSideDesk sur le PC, la connexion est automatique.",MP_PORT],15,UIFontWeightRegular,.80,0);
  UIStackView *cardStack=[[UIStackView alloc] initWithArrangedSubviews:@[caption,_addressLabel,sep,hint]];
  cardStack.axis=UILayoutConstraintAxisVertical;cardStack.spacing=10;cardStack.translatesAutoresizingMaskIntoConstraints=NO;
  [cardStack setCustomSpacing:16 afterView:_addressLabel];
@@ -1195,7 +1195,7 @@ static const int MPQualities[3]={6,12,20};
  _inputMode=[[UISegmentedControl alloc] initWithItems:@[@"Souris",@"Tactile",@"Stylet"]];
  _penTool=[[UISegmentedControl alloc] initWithItems:@[@"Stylo",@"Gomme"]];
  for(UISegmentedControl *sc in @[_inputMode,_penTool]){sc.tintColor=UIColor.whiteColor;[sc addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];}
- UILabel *modeNote=MPLabel(@"Souris : gestes MirrorPad · Tactile : écran tactile Windows natif · Stylet : tablette graphique (Windows Ink).",13,UIFontWeightRegular,.6,0);
+ UILabel *modeNote=MPLabel(@"Souris : gestes bSideDesk · Tactile : écran tactile Windows natif · Stylet : tablette graphique (Windows Ink).",13,UIFontWeightRegular,.6,0);
  UIStackView *tools=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Pavé tactile" action:@selector(openTrackpad)],[self tool:@"Raccourcis" action:@selector(openShortcuts)],[self tool:@"Clavier" action:@selector(openKeyboard)],[self tool:@"Tableau de bord" action:@selector(openDashboard)]]];
  tools.distribution=UIStackViewDistributionFillEqually;tools.spacing=10;
  UIStackView *sensors=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Webcam" action:@selector(openCamera)],[self tool:@"Micro" action:@selector(toggleMic)],[self tool:@"Envoyer des photos" action:@selector(openPhotos)],[self tool:@"Envoyer un fichier" action:@selector(openFiles)]]];
@@ -1497,7 +1497,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   [row addArrangedSubview:b];
  }
  while(row&&row.arrangedSubviews.count<cols){UIView *v=[UIView new];[row addArrangedSubview:v];}   // garde des cases de même taille
- UILabel *note=MPLabel(@"Liste modifiable sur le PC : %APPDATA%\\MirrorPad\\config.json, section « Shortcuts ».",13,UIFontWeightRegular,.5,0);
+ UILabel *note=MPLabel(@"Liste modifiable sur le PC : %APPDATA%\\bSideDesk\\config.json, section « Shortcuts ».",13,UIFontWeightRegular,.5,0);
  note.translatesAutoresizingMaskIntoConstraints=NO;[self addSubview:note];
  [NSLayoutConstraint activateConstraints:@[
   [head.topAnchor constraintEqualToAnchor:self.topAnchor constant:24],[head.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:28],
@@ -1580,7 +1580,7 @@ static const CGFloat MPTouchBarHeight=50;
  _title.text=title.uppercaseString;_items=items;
  for(UIView *v in _stack.arrangedSubviews){[_stack removeArrangedSubview:v];[v removeFromSuperview];}
  for(NSUInteger i=0;i<items.count;i++){
-  // touches façon Touch Bar : gris anthracite arrondi, actions MirrorPad en bleu
+  // touches façon Touch Bar : gris anthracite arrondi, actions bSideDesk en bleu
   UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.tag=(NSInteger)i;
   [b setTitle:items[i][0] forState:UIControlStateNormal];[b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
   b.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
@@ -1794,7 +1794,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (instancetype)initWithFrame:(CGRect)f {
  if(!(self=[super initWithFrame:f]))return nil;
  self.backgroundColor=UIColor.blackColor;
- UILabel *badge=MPLabel(@"●  WEBCAM ACTIVE  ·  « MirrorPad (iPad) » sur le PC",14,UIFontWeightSemibold,1,1);
+ UILabel *badge=MPLabel(@"●  WEBCAM ACTIVE  ·  « OBS Virtual Camera » sur le PC",14,UIFontWeightSemibold,1,1);
  UIView *pill=[UIView new];pill.backgroundColor=[UIColor colorWithRed:.8 green:.1 blue:.2 alpha:.75];pill.layer.cornerRadius=18;
  pill.translatesAutoresizingMaskIntoConstraints=NO;badge.translatesAutoresizingMaskIntoConstraints=NO;
  [pill addSubview:badge];[self addSubview:pill];
@@ -2039,7 +2039,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
    _clipCount=UIPasteboard.generalPasteboard.changeCount;
   }
  } else if([k isEqualToString:@"MSG"]&&p.count>=2){
-  [self showNotice:@"MirrorPad" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
+  [self showNotice:@"bSideDesk" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
  } else if([k isEqualToString:@"CAMREQ"]&&p.count>=2){
   [self remoteCamera:p];
  } else if([k isEqualToString:@"DB"]||[k isEqualToString:@"DBX"]){
@@ -2214,7 +2214,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   if(d.length<7)return;
   size_t n=(size_t)b[5]<<8|b[6];off=7+n;if(d.length<off)return;
   NSString *name=[[[NSString alloc] initWithBytes:b+7 length:n encoding:NSUTF8StringEncoding] lastPathComponent]?:@"fichier";
-  NSString *dir=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/MirrorPad"];
+  NSString *dir=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bSideDesk"];
   [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path=[dir stringByAppendingPathComponent:name];
   for(int i=2;[NSFileManager.defaultManager fileExistsAtPath:path];i++)
@@ -2282,7 +2282,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
    }
    free(buf);[in close];if(ok)sent++;
   }
-  dispatch_async(dispatch_get_main_queue(),^{[w showNotice:@"Fichiers" text:[NSString stringWithFormat:@"%lu fichier(s) envoyé(s) dans Téléchargements > MirrorPad sur le PC.",sent] code:nil ok:sent==urls.count];});
+  dispatch_async(dispatch_get_main_queue(),^{[w showNotice:@"Fichiers" text:[NSString stringWithFormat:@"%lu fichier(s) envoyé(s) dans Téléchargements > bSideDesk sur le PC.",sent] code:nil ok:sent==urls.count];});
  });
 }
 
@@ -2304,7 +2304,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   __weak MPSecureServer *in=_input;
   _camera.onFrame=^(NSData *f){[in sendBinary:3 data:f];};
   _camera.canSend=^BOOL{return in.pending<20;};
-  if(![_camera start:YES]){[self showNotice:@"Webcam" text:@"La caméra est indisponible. Autorisez MirrorPad dans Réglages > Confidentialité > Appareil photo." code:nil ok:NO];return;}
+  if(![_camera start:YES]){[self showNotice:@"Webcam" text:@"La caméra est indisponible. Autorisez bSideDesk dans Réglages > Confidentialité > Appareil photo." code:nil ok:NO];return;}
   [_input send:@"CAM START 1280 720 30"];
  }
  _camView=[MPCameraView new];
@@ -2356,7 +2356,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   if(!_input.connected){[self showNotice:@"Micro" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
   __weak MPSecureServer *in=_input;
   _mic.onPCM=^(NSData *pcm){[in sendBinary:6 data:pcm];};
-  if(![_mic start]){[self showNotice:@"Micro" text:@"Le micro est indisponible. Autorisez MirrorPad dans Réglages > Confidentialité > Micro." code:nil ok:NO];return;}
+  if(![_mic start]){[self showNotice:@"Micro" text:@"Le micro est indisponible. Autorisez bSideDesk dans Réglages > Confidentialité > Micro." code:nil ok:NO];return;}
   [_input send:@"MIC START 48000 1"];
   [self showNotice:@"Micro actif" text:@"Sur le PC, choisissez « CABLE Output » comme micro dans Teams, Zoom… (pilote VB-CABLE)." code:nil ok:YES];
  }
@@ -2408,7 +2408,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
    [frame appendData:name];[frame appendData:data];
    if(frame.length>=(1u<<24))msg=@"Photo trop volumineuse (16 Mo maximum).";
    else {[input sendBinary:5 data:frame];ok=YES;
-    msg=[NSString stringWithFormat:@"%.1f Mo envoyés. Elle arrive dans Téléchargements > MirrorPad sur le PC.",frame.length/1048576.0];}
+    msg=[NSString stringWithFormat:@"%.1f Mo envoyés. Elle arrive dans Téléchargements > bSideDesk sur le PC.",frame.length/1048576.0];}
   }
   dispatch_async(dispatch_get_main_queue(),^{[w showNotice:ok?@"Photo envoyée":@"Photos" text:msg code:nil ok:ok];});
  });
@@ -2556,7 +2556,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  }
 }
 - (void)enqueue:(CMSampleBufferRef)sb {
- if(_video.status==AVQueuedSampleBufferRenderingStatusFailed){NSLog(@"MirrorPad: décodeur en erreur %@",_video.error);[_video flush];}
+ if(_video.status==AVQueuedSampleBufferRenderingStatusFailed){NSLog(@"bSideDesk: décodeur en erreur %@",_video.error);[_video flush];}
  [_video enqueueSampleBuffer:sb];
 }
 - (void)setConnected:(BOOL)c {
@@ -2590,10 +2590,10 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  _input.paused=NO;
  [self publishBonjour];
 }
-// Annonce Bonjour « _mirrorpad._tcp » : le PC retrouve l'iPad sans connaître son adresse IP.
+// Annonce Bonjour « _bsidedesk._tcp » : le PC retrouve l'iPad sans connaître son adresse IP.
 - (void)publishBonjour {
  [_bonjour stop];
- _bonjour=[[NSNetService alloc] initWithDomain:@"local." type:@"_mirrorpad._tcp." name:UIDevice.currentDevice.name port:MP_PORT];
+ _bonjour=[[NSNetService alloc] initWithDomain:@"local." type:@"_bsidedesk._tcp." name:UIDevice.currentDevice.name port:MP_PORT];
  [_bonjour publish];
 }
 - (void)refreshAddress {_home.addressLabel.text=MPLocalIP();}
@@ -2602,12 +2602,32 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskAll;}
 @end
 
+// Ancien nom de l'app (MirrorPad, local.btv.mirrorpad) : au premier lancement, on reprend ses réglages
+// et l'appairage avec le PC (l'app n'est pas dans un bac à sable sur l'iPad jailbreaké), ainsi que les fichiers reçus
+static void MPMigrateFromMirrorPad(void){
+ NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+ if([d boolForKey:@"migratedFromMirrorPad"])return;
+ NSString *me=NSBundle.mainBundle.bundleIdentifier?:@"local.btv.bsidedesk";
+ NSDictionary *old=[d persistentDomainForName:@"local.btv.mirrorpad"];
+ if(old.count&&![d persistentDomainForName:me].count){
+  [d setPersistentDomain:old forName:me];
+  NSLog(@"bSideDesk: %lu réglages repris de MirrorPad",(unsigned long)old.count);
+ }
+ NSFileManager *fm=NSFileManager.defaultManager;
+ NSString *docs=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+ NSString *from=[docs stringByAppendingPathComponent:@"MirrorPad"],*to=[docs stringByAppendingPathComponent:@"bSideDesk"];
+ if([fm fileExistsAtPath:from]&&![fm fileExistsAtPath:to])[fm moveItemAtPath:from toPath:to error:nil];
+ [d setBool:YES forKey:@"migratedFromMirrorPad"];
+ [d synchronize];
+}
+
 @interface MPAppDelegate : UIResponder<UIApplicationDelegate>
 @property(nonatomic,strong) UIWindow *window;
 @end
 @implementation MPAppDelegate
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)options {
  (void)options;
+ MPMigrateFromMirrorPad();
  app.idleTimerDisabled=YES;
  self.window=[[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
  self.window.rootViewController=[MPViewController new];

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installe MirrorPad sur l'iPad (SSH, même clé que les essais).
+"""Installe bSideDesk sur l'iPad (SSH, même clé que les essais).
 
   python3 deploy.py                      # installe le .deb le plus récent de build/
   python3 deploy.py --deb chemin.deb --save   # installe et garde une copie pour le rattrapage
@@ -9,7 +9,7 @@ import argparse, shutil, subprocess, sys
 from pathlib import Path
 
 KEY = '/home/bender/projets/bTV-IOS/outils/ipad-diagnostic'
-SAVED = Path.home() / '.mirrorpad' / 'latest.deb'
+SAVED = Path.home() / '.bsidedesk' / 'latest.deb'
 SSH_OPTS = ['-i', KEY, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=5']
 
 def ssh(ipad, cmd, timeout=60):
@@ -19,10 +19,14 @@ def deb_version(deb):
     return subprocess.run(['dpkg-deb', '-f', str(deb), 'Version'], capture_output=True, text=True, check=True).stdout.strip()
 
 def install(ipad, deb):
-    subprocess.run(['scp', *SSH_OPTS, str(deb), f'root@{ipad}:/var/root/mirrorpad.deb'], check=True, timeout=60)
+    subprocess.run(['scp', *SSH_OPTS, str(deb), f'root@{ipad}:/var/root/bsidedesk.deb'], check=True, timeout=60)
     # installe, rafraîchit l'écran d'accueil, puis relance l'app si elle tournait
-    cmd = ('dpkg -i /var/root/mirrorpad.deb && uicache -p /Applications/MirrorPad.app; '
-           'if killall MirrorPad 2>/dev/null; then sleep 1; uiopen mirrorpad:// 2>/dev/null || true; fi')
+    # ancien nom (MirrorPad) : on le retire après l'installation ; ses réglages restent dans
+    # /var/mobile/Library/Preferences et bSideDesk les reprend à son premier lancement
+    cmd = ('dpkg -i /var/root/bsidedesk.deb && uicache -p /Applications/bSideDesk.app; '
+           'if dpkg -s local.btv.mirrorpad >/dev/null 2>&1; then killall MirrorPad 2>/dev/null; dpkg -r local.btv.mirrorpad; '
+           'uicache -u /Applications/MirrorPad.app 2>/dev/null || uicache 2>/dev/null; uiopen bsidedesk:// 2>/dev/null || true; fi; '
+           'if killall bSideDesk 2>/dev/null; then sleep 1; uiopen bsidedesk:// 2>/dev/null || true; fi')
     r = ssh(ipad, cmd)
     print(r.stdout, r.stderr)
     return r.returncode
@@ -40,7 +44,7 @@ def main():
             return 0
         want = deb_version(SAVED)
         try:
-            r = ssh(a.ipad, "dpkg-query -W -f='${Version}' local.btv.mirrorpad", timeout=15)
+            r = ssh(a.ipad, "dpkg-query -W -f='${Version}' local.btv.bsidedesk", timeout=15)
         except subprocess.TimeoutExpired:
             return 0
         if r.returncode == 255:        # iPad injoignable : on réessaiera plus tard
@@ -50,7 +54,7 @@ def main():
         print(f'iPad en {r.stdout.strip() or "?"} -> installation de {want}')
         return install(a.ipad, SAVED)
 
-    deb = Path(a.deb) if a.deb else max((Path(__file__).resolve().parent / 'build').glob('mirrorpad_*.deb'), key=lambda p: p.stat().st_mtime)
+    deb = Path(a.deb) if a.deb else max((Path(__file__).resolve().parent / 'build').glob('bsidedesk_*.deb'), key=lambda p: p.stat().st_mtime)
     if a.save:
         SAVED.parent.mkdir(exist_ok=True)
         shutil.copy(deb, SAVED)

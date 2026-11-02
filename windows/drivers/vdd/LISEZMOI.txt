@@ -1,3 +1,3 @@
 Virtual Display Driver 24.10.27 (x64) - https://github.com/VirtualDrivers/Virtual-Display-Driver
 Pilote d'écran virtuel (IddCx) distribué sous licence MIT par ses auteurs (MikeTheTech et contributeurs).
-Installé par MirrorPad-Setup.exe via « MirrorPad.exe --setup-display ».
+Installé par bSideDesk-Setup.exe via « bSideDesk.exe --setup-display ».

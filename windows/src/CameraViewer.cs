@@ -9,7 +9,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public class CameraViewer : Form
     {
@@ -48,7 +48,7 @@ namespace MirrorPad
             watch.Tick += (s, e) =>
             {
                 var age = (DateTime.Now - lastFrame).TotalSeconds;
-                if (lastFrame == DateTime.MinValue) status.Text = "Connexion à la caméra… (l'app MirrorPad doit être ouverte sur l'iPad)";
+                if (lastFrame == DateTime.MinValue) status.Text = "Connexion à la caméra… (l'app bSideDesk doit être ouverte sur l'iPad)";
                 else if (age > 3) status.Text = "Plus d'image depuis " + (int)age + " s (iPad verrouillé ou hors de portée ?)";
                 else status.Text = recorder != null ? "● Enregistrement en cours : " + Path.GetFileName(recPath) : "En direct";
             };
@@ -148,7 +148,7 @@ namespace MirrorPad
             Bitmap copy;
             lock (frameLock) copy = last != null ? new Bitmap(last) : null;
             if (copy == null) return;
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "MirrorPad");
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "bSideDesk");
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, "iPad_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".png");
             copy.Save(path, ImageFormat.Png); copy.Dispose();
@@ -168,7 +168,7 @@ namespace MirrorPad
                 Log.Write("vidéo de la caméra de l'iPad : " + recPath);
                 return;
             }
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "MirrorPad");
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "bSideDesk");
             Directory.CreateDirectory(dir);
             recPath = Path.Combine(dir, "iPad_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".mp4");
             recorder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags +genpts -r 30 -f h264 -i pipe:0 -c copy -movflags +faststart \"" + recPath + "\"")

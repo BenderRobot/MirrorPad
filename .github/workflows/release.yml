@@ -1,6 +1,6 @@
 # À chaque push sur main : compile l'app iPad sur SRVHOME, l'installe aussitôt sur l'iPad,
 # emballe l'app Windows et publie une release GitHub (que l'app Windows récupère toute seule).
-name: Release MirrorPad
+name: Release bSideDesk
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
         run: python3 ipad/build.py
       - name: Installer sur l'iPad
         continue-on-error: true   # iPad éteint : le cron de rattrapage s'en chargera
-        run: python3 ipad/deploy.py --deb "ipad/build/mirrorpad_${VERSION}_iphoneos-arm.deb" --save
+        run: python3 ipad/deploy.py --deb "ipad/build/bsidedesk_${VERSION}_iphoneos-arm.deb" --save
       - uses: actions/upload-artifact@v4
         with:
           name: ipad
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Installer Mono (compilateur C#) et NSIS (installateur Windows)
         run: sudo apt-get update -q && sudo apt-get install -y -q mono-devel nsis
-      - name: Compiler MirrorPad.exe
+      - name: Compiler bSideDesk.exe
         run: sh windows/build.sh
       - name: Signer les exe (Azure Trusted Signing, si configuré)
         env:
@@ -53,12 +53,12 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: sh windows/sign.sh windows/MirrorPad.exe windows/installer/MirrorPadInstall.exe
+        run: sh windows/sign.sh windows/bSideDesk.exe windows/installer/bSideDeskInstall.exe
       - name: Emballer
         run: |
           echo "$VERSION" > windows/version.txt
           cd windows
-          zip ../MirrorPad-Windows.zip MirrorPad.exe MirrorPad.vbs MirrorPad-App.ps1 MirrorPad.ico MirrorPad.png version.txt
+          zip ../bSideDesk-Windows.zip bSideDesk.exe bSideDesk.vbs bSideDesk-App.ps1 bSideDesk.ico bSideDesk.png version.txt
       - name: Préparer l'installateur (ffmpeg)
         run: |
           cd windows/installer
@@ -67,11 +67,11 @@ jobs:
           unzip -q -j -o ff.zip '*/bin/ffmpeg.exe' -d .
           unzip -q -j -o ff.zip '*/LICENSE.txt' -d . && mv LICENSE.txt ffmpeg-LICENCE.txt || echo "FFmpeg (GPL) - sources : https://ffmpeg.org et https://github.com/BtbN/FFmpeg-Builds" > ffmpeg-LICENCE.txt
           rm -f ff.zip
-      - name: Construire MirrorPad-Setup.exe
+      - name: Construire bSideDesk-Setup.exe
         run: |
           cd windows/installer
-          makensis -V3 -DVERSION="$VERSION" MirrorPad.nsi
-          mv MirrorPad-Setup.exe ../../
+          makensis -V3 -DVERSION="$VERSION" bSideDesk.nsi
+          mv bSideDesk-Setup.exe ../../
       - name: Signer l'installateur (si configuré)
         env:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
@@ -80,13 +80,13 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: sh windows/sign.sh MirrorPad-Setup.exe
+        run: sh windows/sign.sh bSideDesk-Setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: |
-            MirrorPad-Windows.zip
-            MirrorPad-Setup.exe
+            bSideDesk-Windows.zip
+            bSideDesk-Setup.exe
 
   release:
     name: Publier
@@ -100,4 +100,4 @@ jobs:
       - name: Créer la release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${VERSION}" dist/* --repo "$GITHUB_REPOSITORY" --title "MirrorPad ${VERSION}" --generate-notes
+        run: gh release create "v${VERSION}" dist/* --repo "$GITHUB_REPOSITORY" --title "bSideDesk ${VERSION}" --generate-notes

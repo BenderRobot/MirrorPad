@@ -15,6 +15,6 @@ TOKEN=$(curl -fsS -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oa
 for f in "$@"; do
   java -jar /tmp/jsign.jar --storetype TRUSTEDSIGNING --keystore "$AZURE_SIGNING_ENDPOINT" --storepass "$TOKEN" \
     --alias "$AZURE_SIGNING_ACCOUNT/$AZURE_SIGNING_PROFILE" --tsaurl http://timestamp.acs.microsoft.com --tsmode RFC3161 \
-    --name "MirrorPad" "$f"
+    --name "bSideDesk" "$f"
   echo "signé : $f"
 done

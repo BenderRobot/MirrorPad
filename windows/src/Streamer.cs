@@ -5,7 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public class Streamer
     {
@@ -56,7 +56,7 @@ namespace MirrorPad
 
         public static string FindFfmpeg()
         {
-            // ffmpeg livré par l'installateur, à côté de MirrorPad.exe
+            // ffmpeg livré par l'installateur, à côté de bSideDesk.exe
             var local = Path.Combine(Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath), "ffmpeg.exe");
             if (File.Exists(local)) return local;
             foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))

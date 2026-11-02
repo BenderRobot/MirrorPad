@@ -1,4 +1,4 @@
-// Réglages de MirrorPad (%APPDATA%\MirrorPad\config.json) — compatibles avec l'ancienne version PowerShell.
+// Réglages de bSideDesk (%APPDATA%\bSideDesk\config.json) — compatibles avec l'ancienne version PowerShell.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -6,7 +6,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     [DataContract]
     public class PairedDevice
@@ -59,7 +59,34 @@ namespace MirrorPad
         [DataMember] public bool ProximityLock;
         [DataMember] public List<DashboardCheck> DashboardChecks;   // tableau de bord : sites / machines à surveiller    // verrouiller le PC quand l'iPad s'éloigne (connexion perdue sans veille)     // ouvrir le clavier de l'iPad quand on touche une zone de saisie   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
 
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MirrorPad");
+        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "bSideDesk");
+
+        // Ancien nom de l'app (MirrorPad) : au premier lancement de bSideDesk, on reprend ses réglages,
+        // son certificat et les iPad appairés (pas besoin de refaire l'appairage). true = migration faite à l'instant
+        public static bool MigrateFromMirrorPad(out bool wasAdmin)
+        {
+            wasAdmin = false;
+            var old = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MirrorPad");
+            if (Directory.Exists(Dir) || !Directory.Exists(old)) return false;
+            Directory.CreateDirectory(Dir);
+            foreach (var f in Directory.GetFiles(old))
+            {
+                var name = Path.GetFileName(f);
+                if (name.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) continue;
+                try { File.Copy(f, Path.Combine(Dir, name)); } catch { }
+            }
+            var json = Path.Combine(Dir, "config.json");
+            if (File.Exists(json))
+            {
+                var t = File.ReadAllText(json);
+                wasAdmin = System.Text.RegularExpressions.Regex.IsMatch(t, "\"AdminMode\"\\s*:\\s*true");
+                t = t.Replace("BenderRobot\\/MirrorPad", "BenderRobot\\/bSideDesk").Replace("BenderRobot/MirrorPad", "BenderRobot/bSideDesk");
+                // la tâche planifiée « mode administrateur » est recréée sous le nouveau nom au démarrage
+                t = System.Text.RegularExpressions.Regex.Replace(t, "\"AdminMode\"\\s*:\\s*true", "\"AdminMode\":false");
+                File.WriteAllText(json, t);
+            }
+            return true;
+        }
         static string FilePath { get { return Path.Combine(Dir, "config.json"); } }
 
         public Config() { SetDefaults(); }
@@ -71,7 +98,7 @@ namespace MirrorPad
         {
             IPad = ""; Output = 1; Fps = 30; Mbps = 12; Encoder = "auto"; DetectedEncoder = "";
             AutoDiscover = true; AutoConnect = true; Touch = true; AutoUpdate = true; AdminMode = false;
-            UpdateRepo = "BenderRobot/MirrorPad"; GitHubToken = ""; TouchScreen = ""; PcId = "";
+            UpdateRepo = "BenderRobot/bSideDesk"; GitHubToken = ""; TouchScreen = ""; PcId = "";
             Paired = new List<PairedDevice>();
             Shortcuts = null;
             SleepWithIPad = true; ShareClipboard = true; VirtualDevice = ""; VirtualDetached = false;
@@ -138,7 +165,7 @@ namespace MirrorPad
     public static class Log
     {
         static readonly object Gate = new object();
-        public static readonly string FilePath = Path.Combine(Config.Dir, "mirrorpad.log");
+        public static readonly string FilePath = Path.Combine(Config.Dir, "bsidedesk.log");
 
         public static void Write(string msg)
         {

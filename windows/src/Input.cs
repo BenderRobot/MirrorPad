@@ -8,7 +8,7 @@ using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public class InputHandler
     {
@@ -397,7 +397,7 @@ namespace MirrorPad
             if (string.IsNullOrEmpty(dev) || w < 320 || h < 320) return;
             if (!Native.SupportsMode(dev, w, h) && !triedModes.Contains(w + "x" + h))
             {
-                // première demande de cette taille : MirrorPad l'ajoute lui-même au pilote d'écran (mode administrateur),
+                // première demande de cette taille : bSideDesk l'ajoute lui-même au pilote d'écran (mode administrateur),
                 // le pilote redémarre, l'écran se rebranche et l'iPad redemande sa taille
                 triedModes.Add(w + "x" + h);
                 Log.Write("mode " + w + "x" + h + " absent du pilote d'écran : ajout automatique");
@@ -416,7 +416,7 @@ namespace MirrorPad
             }
             if (!Native.SupportsMode(dev, w, h))
             {
-                Log.Write("mode " + w + "x" + h + " toujours absent du pilote d'écran (MirrorPad doit être en mode administrateur)");
+                Log.Write("mode " + w + "x" + h + " toujours absent du pilote d'écran (bSideDesk doit être en mode administrateur)");
                 bool portrait = h > w;
                 // repli : bonne orientation dans la taille iPad complète
                 int fw = portrait ? 1536 : 2048, fh = portrait ? 2048 : 1536;
@@ -456,7 +456,7 @@ namespace MirrorPad
             else
             {
                 if (HoldStream != null) HoldStream(0);
-                Log.Write("changement de résolution impossible (code " + r + ") : menu MirrorPad > « Installer les composants manquants… »");
+                Log.Write("changement de résolution impossible (code " + r + ") : menu bSideDesk > « Installer les composants manquants… »");
             }
         }
     }

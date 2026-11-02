@@ -1,6 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=MirrorPad
-Comment=iPad en écran supplémentaire
-Exec=sh -c 'python3 "$HOME/MirrorPad/linux/mirrorpad-sender.py" >> "$HOME/.config/mirrorpad/sender.log" 2>&1'
-X-GNOME-Autostart-enabled=true

@@ -1,4 +1,4 @@
-# MirrorPad
+# bSideDesk
 
 **L'iPad devient le « bureau d'à côté » du PC** : second écran tactile, stylet, clavier, Touch Bar contextuelle,
 webcam, micro, haut-parleur, transfert de fichiers et tableau de bord. Windows 10/11 (et Debian X11), iPad sous iOS 12 jailbreaké.
@@ -10,12 +10,16 @@ Windows : écran virtuel (Virtual Display Driver) → ffmpeg ddagrab → H.264/F
 iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─────┘  (usbmuxd)
 ```
 
+> **Ancien nom : MirrorPad.** Au premier lancement, bSideDesk reprend tout seul les réglages, le certificat et les iPad
+> appairés de MirrorPad (PC : `%APPDATA%\MirrorPad` → `%APPDATA%\bSideDesk` ; iPad : réglages de `local.btv.mirrorpad`),
+> et `bSideDesk-Setup.exe` désinstalle l'ancienne app.
+
 | Dossier | Contenu |
 |---|---|
-| `ipad/` | App iOS (`MirrorPad.m`), `build.py` (Theos sur SRVHOME), `deploy.py` (SSH vers l'iPad) |
-| `windows/src/` | App de la zone de notification en C# (.NET Framework 4.8), compilée en `MirrorPad.exe` par `build.sh` |
-| `windows/helper/` | `MirrorPadInstall.exe` : outil d'installation des pilotes (embarqué dans l'installateur uniquement) |
-| `windows/installer/` | `MirrorPad.nsi` (installateur NSIS), `release.yml` (copie du workflow), `LISEZMOI.md` |
+| `ipad/` | App iOS (`bSideDesk.m`), `build.py` (Theos sur SRVHOME), `deploy.py` (SSH vers l'iPad) |
+| `windows/src/` | App de la zone de notification en C# (.NET Framework 4.8), compilée en `bSideDesk.exe` par `build.sh` |
+| `windows/helper/` | `bSideDeskInstall.exe` : outil d'installation des pilotes (embarqué dans l'installateur uniquement) |
+| `windows/installer/` | `bSideDesk.nsi` (installateur NSIS), `release.yml` (copie du workflow), `LISEZMOI.md` |
 | `windows/drivers/vdd/` | Virtual Display Driver 24.10.27 (MIT) + définitions iPad paysage / portrait |
 | `windows/tests/` | `Test-Tactile.ps1` : diagnostic de l'injection tactile Windows |
 | `linux/` | Envoyeur Python pour Debian / X11 |
@@ -52,28 +56,28 @@ iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─�
 | 3 doigts vers le haut | fenêtre active ⇄ iPad |
 | 4 doigts tapés | réglages |
 
-Sur ce PC, Windows ignore le tactile et le stylet simulés : MirrorPad le détecte au premier appui et bascule seul
+Sur ce PC, Windows ignore le tactile et le stylet simulés : bSideDesk le détecte au premier appui et bascule seul
 en **émulation souris** (vrais mouvements `SendInput`, défilement fin, pincer = zoom, appui long = clic droit).
 
 ## Installation Windows
 
-**Tout passe par `MirrorPad-Setup.exe`** (release GitHub) : jamais de script à lancer à la main.
-Chaque nouveau composant Windows = une nouvelle section de `windows/installer/MirrorPad.nsi`.
+**Tout passe par `bSideDesk-Setup.exe`** (release GitHub) : jamais de script à lancer à la main.
+Chaque nouveau composant Windows = une nouvelle section de `windows/installer/bSideDesk.nsi`.
 
 | Composant (case de l'installateur) | Contenu |
 |---|---|
-| MirrorPad | app + ffmpeg, menu Démarrer, démarrage avec Windows, désinstallation dans « Applications installées » |
+| bSideDesk | app + ffmpeg, menu Démarrer, démarrage avec Windows, désinstallation dans « Applications installées » |
 | Écran virtuel | Virtual Display Driver + `C:\VirtualDisplayDriver\vdd_settings.xml` (2048×1536, 1536×2048 et les tailles avec Touch Bar 2048×1436, 1536×1948) |
 | Webcam | OBS Studio via winget (caméra « OBS Virtual Camera » : Teams, Zoom, navigateurs ; pas l'appli Caméra de Windows 10) |
 | Câble USB | service Apple Mobile Device seul, extrait de l'installateur officiel d'Apple (sans iTunes) |
 | Micro | VB-CABLE, téléchargé depuis vb-audio.com pendant l'installation |
 
 Dans l'app : menu de l'icône > « Installer les composants manquants… » télécharge et relance le dernier installateur.
-Réglages : `%APPDATA%\MirrorPad\config.json` · journal : `mirrorpad.log` (même dossier) · fichiers reçus : `Téléchargements\MirrorPad`.
+Réglages : `%APPDATA%\bSideDesk\config.json` · journal : `bsidedesk.log` (même dossier) · fichiers reçus : `Téléchargements\bSideDesk`.
 
 ### Surveillance du tableau de bord
 
-Dans `config.json` (MirrorPad fermé) :
+Dans `config.json` (bSideDesk fermé) :
 
 ```json
 "DashboardChecks": [
@@ -91,9 +95,9 @@ Dans `config.json` (MirrorPad fermé) :
 
 À chaque push sur `main` (version `1.0.<n>`) :
 1. **SRVHOME** (runner auto-hébergé) compile l'app iPad et l'installe aussitôt sur l'iPad (l'app est relancée).
-2. **GitHub (Ubuntu)** compile `MirrorPad.exe` et `MirrorPadInstall.exe` avec Mono, télécharge ffmpeg (BtbN, GPL),
-   construit `MirrorPad-Setup.exe` avec NSIS et signe les exe si Azure Trusted Signing est configuré (`windows/sign.sh`).
-3. Une **release GitHub** publie le `.deb` iPad, `MirrorPad-Windows.zip` (mises à jour) et `MirrorPad-Setup.exe`.
+2. **GitHub (Ubuntu)** compile `bSideDesk.exe` et `bSideDeskInstall.exe` avec Mono, télécharge ffmpeg (BtbN, GPL),
+   construit `bSideDesk-Setup.exe` avec NSIS et signe les exe si Azure Trusted Signing est configuré (`windows/sign.sh`).
+3. Une **release GitHub** publie le `.deb` iPad, `bSideDesk-Windows.zip` (mises à jour) et `bSideDesk-Setup.exe`.
 4. **L'app Windows** vérifie les releases toutes les 2 minutes, se met à jour et redémarre seule.
 
 Signature (recommandée contre les alertes Defender / SmartScreen) : variables `AZURE_SIGNING_ENDPOINT`,
@@ -132,11 +136,11 @@ Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q satur
 
 ```bash
 sudo apt install ffmpeg xdotool x11-xserver-utils
-python3 linux/mirrorpad-sender.py            # iPad détecté automatiquement
-cp linux/mirrorpad.desktop ~/.config/autostart/   # lancement à l'ouverture de session
+python3 linux/bsidedesk-sender.py            # iPad détecté automatiquement
+cp linux/bsidedesk.desktop ~/.config/autostart/   # lancement à l'ouverture de session
 ```
 Crée un moniteur virtuel 2048×1536 à droite des écrans (`xrandr --setmonitor`), encodage VA-API si disponible, sinon x264.
-Réglages : `~/.config/mirrorpad/config.json`. Wayland non pris en charge. Les fonctions récentes (Touch Bar, son, fichiers,
+Réglages : `~/.config/bsidedesk/config.json`. Wayland non pris en charge. Les fonctions récentes (Touch Bar, son, fichiers,
 tableau de bord, USB) sont pour l'instant propres à Windows.
 
 ## Limites connues

@@ -11,7 +11,7 @@ using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     // Contrôle personnalisé du tableau de bord : une adresse web (code HTTP) ou un nom d'hôte (ping)
     [DataContract]
@@ -194,7 +194,7 @@ namespace MirrorPad
         }
     }
 
-    // « Envoyer vers > iPad (MirrorPad) » dans l'Explorateur : une 2e instance dépose la demande dans ce dossier
+    // « Envoyer vers > iPad (bSideDesk) » dans l'Explorateur : une 2e instance dépose la demande dans ce dossier
     public static class Outbox
     {
         public static readonly string Dir = Path.Combine(Config.Dir, "outbox");

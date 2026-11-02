@@ -1,22 +1,22 @@
-﻿; MirrorPad-Setup.exe : installation complète de MirrorPad pour Windows (NSIS, compilé par GitHub Actions)
-;   makensis -DVERSION=1.0.42 MirrorPad.nsi
+﻿; bSideDesk-Setup.exe : installation complète de bSideDesk pour Windows (NSIS, compilé par GitHub Actions)
+;   makensis -DVERSION=1.0.42 bSideDesk.nsi
 ; Fichiers attendus à côté de ce script (préparés par le workflow) :
-;   ffmpeg.exe, ffmpeg-LICENCE.txt, MirrorPadInstall.exe
+;   ffmpeg.exe, ffmpeg-LICENCE.txt, bSideDeskInstall.exe
 Unicode true
 !ifndef VERSION
   !define VERSION "1.0.0"
 !endif
-!define APP "MirrorPad"
-!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\MirrorPad"
+!define APP "bSideDesk"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\bSideDesk"
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
 
 Name "${APP}"
 Caption "Installation de ${APP} ${VERSION}"
-OutFile "MirrorPad-Setup.exe"
+OutFile "bSideDesk-Setup.exe"
 RequestExecutionLevel admin
-InstallDir "$LOCALAPPDATA\MirrorPad\app"
+InstallDir "$LOCALAPPDATA\bSideDesk\app"
 SetCompressor /SOLID lzma
 BrandingText "${APP} ${VERSION}"
 VIProductVersion "${VERSION}.0"
@@ -26,8 +26,8 @@ VIAddVersionKey /LANG=1036 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1036 "ProductVersion" "${VERSION}"
 VIAddVersionKey /LANG=1036 "LegalCopyright" "Benjamin Laurens"
 
-!define MUI_ICON "..\MirrorPad.ico"
-!define MUI_UNICON "..\MirrorPad.ico"
+!define MUI_ICON "..\bSideDesk.ico"
+!define MUI_UNICON "..\bSideDesk.ico"
 !define MUI_ABORTWARNING
 !define MUI_COMPONENTSPAGE_SMALLDESC
 !define MUI_WELCOMEPAGE_TITLE "Bienvenue dans ${APP}"
@@ -60,33 +60,44 @@ FunctionEnd
 
 ; Lance l'app sans les droits administrateur de l'installateur (via l'Explorateur)
 Function LaunchApp
-  Exec '"$WINDIR\explorer.exe" "$INSTDIR\MirrorPad.exe"'
+  Exec '"$WINDIR\explorer.exe" "$INSTDIR\bSideDesk.exe"'
 FunctionEnd
 
 Section "${APP}" SecApp
   SectionIn RO
   DetailPrint "Arrêt de ${APP} s'il est lancé..."
+  nsExec::Exec 'taskkill /f /im bSideDesk.exe'
+  Pop $0
+  ; ancien nom de l'app (MirrorPad) : arrêt et désinstallation, les réglages sont repris par bSideDesk au démarrage
   nsExec::Exec 'taskkill /f /im MirrorPad.exe'
   Pop $0
+  nsExec::Exec 'schtasks.exe /delete /tn MirrorPad /f'
+  Pop $0
   Sleep 800
+  Delete "$SMPROGRAMS\MirrorPad.lnk"
+  Delete "$SMSTARTUP\MirrorPad.lnk"
+  Delete "$SENDTO\iPad (MirrorPad).lnk"
+  RMDir /r "$LOCALAPPDATA\MirrorPad\app"
+  RMDir "$LOCALAPPDATA\MirrorPad"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MirrorPad"
   SetOutPath "$INSTDIR"
-  File "..\MirrorPad.exe"
-  File "..\MirrorPad.ico"
-  File "..\MirrorPad.png"
-  File "..\MirrorPad.vbs"
+  File "..\bSideDesk.exe"
+  File "..\bSideDesk.ico"
+  File "..\bSideDesk.png"
+  File "..\bSideDesk.vbs"
   File "..\version.txt"
   File "ffmpeg.exe"
   File "ffmpeg-LICENCE.txt"
   WriteUninstaller "$INSTDIR\Desinstaller.exe"
 
-  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\MirrorPad.exe" "" "$INSTDIR\MirrorPad.ico" 0
-  CreateShortCut "$SMSTARTUP\${APP}.lnk" "$INSTDIR\MirrorPad.exe" "" "$INSTDIR\MirrorPad.ico" 0
+  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\bSideDesk.exe" "" "$INSTDIR\bSideDesk.ico" 0
+  CreateShortCut "$SMSTARTUP\${APP}.lnk" "$INSTDIR\bSideDesk.exe" "" "$INSTDIR\bSideDesk.ico" 0
 
   ; entrée « Applications installées » de Windows
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Benjamin Laurens"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\MirrorPad.ico"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\bSideDesk.ico"
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Desinstaller.exe"'
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
@@ -102,8 +113,8 @@ Section "Écran virtuel" SecDisplay
   File "..\drivers\vdd\mttvdd.cat"
   File "..\drivers\vdd\Virtual_Display_Driver.cer"
   File "..\drivers\vdd\vdd_settings.xml"
-  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
-  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-display "$PLUGINSDIR\vdd"'
+  File "/oname=$PLUGINSDIR\bSideDeskInstall.exe" "bSideDeskInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\bSideDeskInstall.exe" --setup-display "$PLUGINSDIR\vdd"'
   Pop $0
   ${If} $0 == 3010
     SetRebootFlag true
@@ -130,8 +141,8 @@ SectionEnd
 Section "Câble USB (service Apple)" SecUsb
   ; service « Apple Mobile Device » seul (extrait de l'installateur officiel d'Apple, sans iTunes)
   DetailPrint "Service Apple pour le câble USB (téléchargement d'environ 200 Mo si absent)..."
-  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
-  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-usb'
+  File "/oname=$PLUGINSDIR\bSideDeskInstall.exe" "bSideDeskInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\bSideDeskInstall.exe" --setup-usb'
   Pop $0
   ${If} $0 == 3010
     SetRebootFlag true
@@ -142,8 +153,8 @@ SectionEnd
 
 Section "Micro (l'iPad comme micro)" SecMic
   DetailPrint "Téléchargement et installation de VB-CABLE (vb-audio.com)..."
-  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
-  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-vbcable'
+  File "/oname=$PLUGINSDIR\bSideDeskInstall.exe" "bSideDeskInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\bSideDeskInstall.exe" --setup-vbcable'
   Pop $0
   ${If} $0 != 0
     StrCpy $Warnings "$Warnings$\r$\n- micro (code $0, connexion Internet nécessaire)"
@@ -171,18 +182,18 @@ Function un.onInit
 FunctionEnd
 
 Section "Uninstall"
-  nsExec::Exec 'taskkill /f /im MirrorPad.exe'
+  nsExec::Exec 'taskkill /f /im bSideDesk.exe'
   Pop $0
   Sleep 800
-  nsExec::Exec 'schtasks.exe /delete /tn MirrorPad /f'
+  nsExec::Exec 'schtasks.exe /delete /tn bSideDesk /f'
   Pop $0
   Delete "$SMPROGRAMS\${APP}.lnk"
   Delete "$SMSTARTUP\${APP}.lnk"
   RMDir /r "$INSTDIR"
-  RMDir "$LOCALAPPDATA\MirrorPad"
+  RMDir "$LOCALAPPDATA\bSideDesk"
   DeleteRegKey HKCU "${UNINST_KEY}"
   MessageBox MB_YESNO|MB_ICONQUESTION "Supprimer aussi vos réglages et les iPad appairés ?" /SD IDNO IDNO keep
-    RMDir /r "$APPDATA\MirrorPad"
+    RMDir /r "$APPDATA\bSideDesk"
   keep:
   ; les pilotes (écran virtuel, webcam, VB-CABLE) restent : ils peuvent servir à d'autres logiciels
 SectionEnd

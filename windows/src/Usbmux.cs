@@ -1,6 +1,6 @@
 // Connexion par câble USB : le service « Apple Mobile Device » (installé avec iTunes ou l'app Apple Devices)
 // écoute sur 127.0.0.1:27015 et sait ouvrir un tunnel TCP vers un port de l'iPad branché (protocole usbmuxd).
-// On lui demande la liste des appareils, puis un tunnel vers le port 7272 de MirrorPad : la suite (TLS, appairage)
+// On lui demande la liste des appareils, puis un tunnel vers le port 7272 de bSideDesk : la suite (TLS, appairage)
 // est identique au Wi-Fi, mais sans réseau, avec une latence quasi nulle et l'iPad qui charge.
 using System;
 using System.IO;
@@ -8,7 +8,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public static class Usbmux
     {
@@ -73,7 +73,7 @@ namespace MirrorPad
         {
             var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
                       "<plist version=\"1.0\"><dict>" + dictBody +
-                      "<key>ClientVersionString</key><string>MirrorPad</string><key>ProgName</key><string>MirrorPad</string></dict></plist>\n";
+                      "<key>ClientVersionString</key><string>bSideDesk</string><key>ProgName</key><string>bSideDesk</string></dict></plist>\n";
             var body = Encoding.UTF8.GetBytes(xml);
             var msg = new byte[16 + body.Length];
             BitConverter.GetBytes(msg.Length).CopyTo(msg, 0);

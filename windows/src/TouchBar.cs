@@ -1,5 +1,5 @@
 // Touch Bar contextuelle : boutons de raccourcis adaptés à l'application active du PC, envoyés à l'iPad.
-// Touches au format de Native.Combo (« ctrl+shift+s », « f5 »…) ; « @swap » et « @numpad » sont des actions de MirrorPad.
+// Touches au format de Native.Combo (« ctrl+shift+s », « f5 »…) ; « @swap » et « @numpad » sont des actions de bSideDesk.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -7,7 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public static class TouchBar
     {

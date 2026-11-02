@@ -4,7 +4,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public class PcAudio
     {

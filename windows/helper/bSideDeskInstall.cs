@@ -1,5 +1,5 @@
-// MirrorPadInstall.exe : outil interne de MirrorPad-Setup.exe (jamais installé sur le PC), lancé en administrateur.
-// Séparé de MirrorPad.exe pour que l'application elle-même ne contienne aucun code d'installation de pilote.
+// bSideDeskInstall.exe : outil interne de bSideDesk-Setup.exe (jamais installé sur le PC), lancé en administrateur.
+// Séparé de bSideDesk.exe pour que l'application elle-même ne contienne aucun code d'installation de pilote.
 //   --setup-display <dossier>  pilote d'écran virtuel (Virtual Display Driver) + définitions iPad
 //   --setup-vbcable            pilote micro VB-CABLE, téléchargé depuis vb-audio.com
 using System;
@@ -14,18 +14,18 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 
-[assembly: System.Reflection.AssemblyTitle("MirrorPad - installation des pilotes")]
-[assembly: System.Reflection.AssemblyProduct("MirrorPad")]
+[assembly: System.Reflection.AssemblyTitle("bSideDesk - installation des pilotes")]
+[assembly: System.Reflection.AssemblyProduct("bSideDesk")]
 [assembly: System.Reflection.AssemblyCompany("Benjamin Laurens")]
 [assembly: System.Reflection.AssemblyCopyright("© 2026 Benjamin Laurens")]
 
-namespace MirrorPadInstall
+namespace bSideDeskInstall
 {
     static class Setup
     {
         static int Main(string[] args)
         {
-            if (args.Length == 0) { Console.WriteLine("usage : MirrorPadInstall --setup-display <dossier> | --setup-vbcable"); return 2; }
+            if (args.Length == 0) { Console.WriteLine("usage : bSideDeskInstall --setup-display <dossier> | --setup-vbcable"); return 2; }
             try
             {
                 switch (args[0])
@@ -157,7 +157,7 @@ namespace MirrorPadInstall
         {
             if (UsbServicePresent()) { Console.WriteLine("service Apple déjà installé"); return 0; }
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            var tmp = Path.Combine(Path.GetTempPath(), "mirrorpad-usb");
+            var tmp = Path.Combine(Path.GetTempPath(), "bsidedesk-usb");
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             Directory.CreateDirectory(tmp);
             var setup = Path.Combine(tmp, "iTunes64Setup.exe");
@@ -187,12 +187,12 @@ namespace MirrorPadInstall
         {
             if (FindCable()) { Console.WriteLine("VB-CABLE déjà installé"); return 0; }
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            var tmp = Path.Combine(Path.GetTempPath(), "mirrorpad-vbcable");
+            var tmp = Path.Combine(Path.GetTempPath(), "bsidedesk-vbcable");
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             Directory.CreateDirectory(tmp);
             using (var wc = new WebClient())
             {
-                wc.Headers[HttpRequestHeader.UserAgent] = "MirrorPad-Setup";
+                wc.Headers[HttpRequestHeader.UserAgent] = "bSideDesk-Setup";
                 string url = null;
                 try
                 {

@@ -5,7 +5,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public static class Identity
     {
@@ -17,7 +17,7 @@ namespace MirrorPad
             get
             {
                 if (cert != null) return cert;
-                var test = Environment.GetEnvironmentVariable("MIRRORPAD_TEST_PFX");   // tests uniquement
+                var test = Environment.GetEnvironmentVariable("BSIDEDESK_TEST_PFX");   // tests uniquement
                 if (!string.IsNullOrEmpty(test)) return cert = new X509Certificate2(test, "test", X509KeyStorageFlags.Exportable);
                 try
                 {
@@ -38,7 +38,7 @@ namespace MirrorPad
         {
             using (var rsa = new RSACryptoServiceProvider(2048))
             {
-                var req = new CertificateRequest("CN=MirrorPad " + Environment.MachineName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                var req = new CertificateRequest("CN=bSideDesk " + Environment.MachineName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
                 using (var tmp = req.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(30)))
                 {

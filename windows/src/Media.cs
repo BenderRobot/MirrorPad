@@ -12,7 +12,7 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     // ---------- Webcam : H.264 de l'iPad -> ffmpeg (décodage NV12) -> « OBS Virtual Camera » ----------
     // La caméra virtuelle d'OBS Studio (logiciel signé, très répandu) lit ses images dans une mémoire partagée
@@ -47,7 +47,7 @@ namespace MirrorPad
         {
             int size = Align(HeaderSize);
             for (int i = 0; i < 3; i++) { offsets[i] = size; size = Align(size + FrameSize + FrameHeader); }
-            // accessible aux applis non administrateur (Teams, Zoom…) même si MirrorPad tourne en administrateur
+            // accessible aux applis non administrateur (Teams, Zoom…) même si bSideDesk tourne en administrateur
             IntPtr sd; uint sdLen;
             if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;WD)S:(ML;;NW;;;LW)", 1, out sd, out sdLen)) sd = IntPtr.Zero;
             var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), lpSecurityDescriptor = sd };
@@ -89,7 +89,7 @@ namespace MirrorPad
         public void Start(string ffmpeg)
         {
             Stop();
-            if (!ObsCameraInstalled()) { Notify("Webcam : composant manquant. Menu MirrorPad > « Installer les composants manquants »."); return; }
+            if (!ObsCameraInstalled()) { Notify("Webcam : composant manquant. Menu bSideDesk > « Installer les composants manquants »."); return; }
             try
             {
                 if (!OpenQueue()) { Notify("Webcam : la caméra OBS est déjà utilisée (fermez la caméra virtuelle d'OBS)."); return; }
@@ -114,7 +114,7 @@ namespace MirrorPad
                     catch { }
                 }) { IsBackground = true, Name = "webcam" };
                 pump.Start();
-                Log.Write("webcam MirrorPad active (caméra « OBS Virtual Camera »)");
+                Log.Write("webcam bSideDesk active (caméra « OBS Virtual Camera »)");
             }
             catch (Exception e) { Notify("Webcam : " + e.Message); Stop(); }
         }
@@ -133,7 +133,7 @@ namespace MirrorPad
             {
                 try { d.StandardInput.Close(); } catch { }
                 try { if (!d.WaitForExit(500)) d.Kill(); } catch { }
-                Log.Write("webcam MirrorPad arrêtée");
+                Log.Write("webcam bSideDesk arrêtée");
             }
             var t = pump; pump = null;
             if (t != null) try { t.Join(1000); } catch { }
@@ -187,7 +187,7 @@ namespace MirrorPad
         {
             Stop();
             int id = FindCable();
-            if (id < 0) { Notify("Micro : composant manquant. Menu MirrorPad > « Installer les composants manquants »."); return; }
+            if (id < 0) { Notify("Micro : composant manquant. Menu bSideDesk > « Installer les composants manquants »."); return; }
             var f = new WAVEFORMATEX { wFormatTag = 1, nChannels = (ushort)channels, nSamplesPerSec = (uint)rate, wBitsPerSample = 16 };
             f.nBlockAlign = (ushort)(channels * 2); f.nAvgBytesPerSec = (uint)(rate * f.nBlockAlign);
             if (waveOutOpen(out dev, new UIntPtr((uint)id), ref f, IntPtr.Zero, IntPtr.Zero, 0) != 0) { dev = IntPtr.Zero; Notify("Micro : impossible d'ouvrir VB-CABLE."); return; }
@@ -309,10 +309,10 @@ namespace MirrorPad
         public void Dispose() { try { RemoveClipboardFormatListener(Handle); DestroyHandle(); } catch { } }
     }
 
-    // ---------- Photos envoyées par l'iPad : rangées dans Téléchargements\MirrorPad ----------
+    // ---------- Photos envoyées par l'iPad : rangées dans Téléchargements\bSideDesk ----------
     public static class Inbox
     {
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "MirrorPad");
+        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "bSideDesk");
 
         // Trame : [longueur du nom sur 2 octets][nom UTF-8][contenu]
         public static string Save(byte[] frame)

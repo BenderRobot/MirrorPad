@@ -1,5 +1,5 @@
 ﻿<#
-  Publie les modifications de MirrorPad : commit + push sur main.
+  Publie les modifications de bSideDesk : commit + push sur main.
   GitHub Actions compile ensuite, met à jour l'iPad et publie la release (PC mis à jour sous 2 min).
 
   Double-clic sur Publier.cmd, ou :  .\Publier.ps1 "message du commit"

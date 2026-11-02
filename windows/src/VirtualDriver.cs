@@ -7,7 +7,7 @@ using System.Linq;
 using System.Xml;
 using Microsoft.Win32;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public static class VirtualDriver
     {

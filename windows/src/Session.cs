@@ -15,7 +15,7 @@ using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public class Session
     {

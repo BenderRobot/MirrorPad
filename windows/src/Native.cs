@@ -3,7 +3,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     public static class Native
     {

@@ -15,7 +15,7 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     [DataContract] class GhAsset { [DataMember] public string name; [DataMember] public string url; [DataMember] public string browser_download_url; }
     [DataContract] class GhRelease { [DataMember] public string tag_name; [DataMember] public GhAsset[] assets; }
@@ -60,8 +60,8 @@ namespace MirrorPad
         int ticks;
         readonly bool elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
-        static string ProgramsLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "MirrorPad.lnk"); } }
-        static string StartupLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "MirrorPad.lnk"); } }
+        static string ProgramsLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "bSideDesk.lnk"); } }
+        static string StartupLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "bSideDesk.lnk"); } }
         static string UpdatedFlag { get { return Path.Combine(Config.Dir, "updated.txt"); } }
 
         public App()
@@ -70,7 +70,7 @@ namespace MirrorPad
             var vf = Path.Combine(appDir, "version.txt");
             localVersion = File.Exists(vf) ? File.ReadAllText(vf).Trim() : "0.0.0";
             foreach (var old in Directory.GetFiles(appDir, "*.old")) { try { File.Delete(old); } catch { } }
-            Log.Write("MirrorPad " + localVersion + " démarré" + (elevated ? " (administrateur)" : ""));
+            Log.Write("bSideDesk " + localVersion + " démarré" + (elevated ? " (administrateur)" : ""));
 
             streamer = new Streamer(cfg);
             input = new InputHandler(cfg);
@@ -89,7 +89,7 @@ namespace MirrorPad
             input.Media = HandleMedia;
             clip = new ClipboardWatcher();
             hotkey = new HotkeyWindow { Pressed = SwapWindow };
-            files.Received = path => Post(() => Balloon("Fichier reçu de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\MirrorPad)", ToolTipIcon.Info));
+            files.Received = path => Post(() => Balloon("Fichier reçu de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\bSideDesk)", ToolTipIcon.Info));
             dashboard.Checks = () => cfg.DashboardChecks;
             try
             {
@@ -108,6 +108,14 @@ namespace MirrorPad
             SetState("idle");
             try { MakeShortcuts(); } catch (Exception e) { Log.Write("raccourcis : " + e.Message); }
 
+            if (Program.Migrated)
+            {
+                Log.Write("réglages repris de MirrorPad (ancien nom de l'app)");
+                CleanupMirrorPad();
+                Balloon("MirrorPad s'appelle maintenant bSideDesk. Vos réglages et votre iPad appairé sont conservés.", ToolTipIcon.Info);
+                if (Program.ReEnableAdmin) Post(() => SetAdminMode(true));   // tâche planifiée recréée sous le nouveau nom
+            }
+
             if (File.Exists(UpdatedFlag))
             {
                 Balloon("Mis à jour en version " + localVersion, ToolTipIcon.Info);
@@ -115,7 +123,7 @@ namespace MirrorPad
             }
             if (ffmpeg == null)
             {
-                MessageBox.Show("ffmpeg est introuvable.\n\nInstallez-le avec : winget install Gyan.FFmpeg", "MirrorPad");
+                MessageBox.Show("ffmpeg est introuvable.\n\nInstallez-le avec : winget install Gyan.FFmpeg", "bSideDesk");
             }
             timer.Tick += (s, e) => Tick();
             timer.Start();
@@ -126,7 +134,7 @@ namespace MirrorPad
         // ---------- icônes ----------
         void BuildIcons()
         {
-            var png = Path.Combine(appDir, "MirrorPad.png");
+            var png = Path.Combine(appDir, "bSideDesk.png");
             if (File.Exists(png)) baseImage = Image.FromStream(new MemoryStream(File.ReadAllBytes(png)));
             iconIdle = MakeIcon(Color.FromArgb(120, 120, 120));
             iconWaiting = MakeIcon(Color.FromArgb(230, 150, 30));
@@ -180,7 +188,7 @@ namespace MirrorPad
             else startupItem.Checked = File.Exists(StartupLnk);
         }
 
-        void Balloon(string text, ToolTipIcon icon) { notify.ShowBalloonTip(3000, "MirrorPad", text, icon); }
+        void Balloon(string text, ToolTipIcon icon) { notify.ShowBalloonTip(3000, "bSideDesk", text, icon); }
         void Post(Action a) { ui.Post(_ => a(), null); }
 
         // ---------- état ----------
@@ -196,7 +204,7 @@ namespace MirrorPad
                 case "waiting": notify.Icon = iconWaiting; statusItem.Text = "Recherche de l'iPad…"; toggleItem.Text = "Déconnecter"; break;
                 case "connected": notify.Icon = iconConnected; statusItem.Text = "Connecté : " + target + (enc != "" ? " · " + enc : "") + " · chiffré"; toggleItem.Text = "Déconnecter"; break;
             }
-            var tip = "MirrorPad – " + statusItem.Text; notify.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
+            var tip = "bSideDesk – " + statusItem.Text; notify.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
             if (prev == "connected" && s != "connected") lostAt = DateTime.Now;
             if (s == "connected" && prev != "connected" && (DateTime.Now - lostAt).TotalSeconds > 15)
                 Balloon("iPad connecté : " + target, ToolTipIcon.Info);
@@ -311,7 +319,7 @@ namespace MirrorPad
         void ShowCameras()
         {
             var s = session;
-            if (s == null || s.IsClosed) { Balloon("Connectez d'abord l'iPad (app MirrorPad ouverte).", ToolTipIcon.Warning); return; }
+            if (s == null || s.IsClosed) { Balloon("Connectez d'abord l'iPad (app bSideDesk ouverte).", ToolTipIcon.Warning); return; }
             if (viewer != null && !viewer.IsDisposed) { viewer.Activate(); return; }
             viewer = new CameraViewer(ffmpeg) { SendLine = line => { var cs = session; if (cs != null) cs.Send(line); } };
             viewer.FormClosed += (o, e) => { viewer = null; streamer.SetCap(0); };
@@ -348,15 +356,27 @@ namespace MirrorPad
             }
         }
 
-        // raccourci « iPad (MirrorPad) » dans le menu Envoyer vers de l'Explorateur
+        // raccourci « iPad (bSideDesk) » dans le menu Envoyer vers de l'Explorateur
+        // Restes de l'ancien nom : raccourcis et tâche planifiée « MirrorPad »
+        void CleanupMirrorPad()
+        {
+            foreach (var lnk in new[] {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "MirrorPad.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "MirrorPad.lnk"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "iPad (MirrorPad).lnk") })
+                try { if (File.Exists(lnk)) File.Delete(lnk); } catch { }
+            if (elevated)
+                try { using (var p = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/delete /tn MirrorPad /f") { CreateNoWindow = true, UseShellExecute = false })) p.WaitForExit(10000); } catch { }
+        }
+
         void MakeSendTo()
         {
-            var lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "iPad (MirrorPad).lnk");
+            var lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "iPad (bSideDesk).lnk");
             var t = Type.GetTypeFromProgID("WScript.Shell");
             dynamic sh = Activator.CreateInstance(t);
             dynamic l = sh.CreateShortcut(lnk);
             l.TargetPath = Application.ExecutablePath; l.Arguments = "--send"; l.WorkingDirectory = appDir;
-            var ico = Path.Combine(appDir, "MirrorPad.ico");
+            var ico = Path.Combine(appDir, "bSideDesk.ico");
             l.IconLocation = (File.Exists(ico) ? ico : Application.ExecutablePath) + ",0";
             l.Description = "Envoyer le fichier sur l'iPad";
             l.Save();
@@ -465,11 +485,11 @@ namespace MirrorPad
             }
         }
 
-        // Tous les composants Windows (écran virtuel, webcam, micro, câble USB…) s'installent par MirrorPad-Setup.exe :
+        // Tous les composants Windows (écran virtuel, webcam, micro, câble USB…) s'installent par bSideDesk-Setup.exe :
         // on télécharge celui de la dernière version et on le lance (il ne réinstalle que ce qui manque).
         void InstallDrivers()
         {
-            Balloon("Téléchargement de l'installateur MirrorPad…", ToolTipIcon.Info);
+            Balloon("Téléchargement de l'installateur bSideDesk…", ToolTipIcon.Info);
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try
@@ -478,9 +498,9 @@ namespace MirrorPad
                     GhRelease rel;
                     using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(json)))
                         rel = (GhRelease)new DataContractJsonSerializer(typeof(GhRelease)).ReadObject(ms);
-                    var asset = (rel.assets ?? new GhAsset[0]).FirstOrDefault(a => a.name == "MirrorPad-Setup.exe");
+                    var asset = (rel.assets ?? new GhAsset[0]).FirstOrDefault(a => a.name == "bSideDesk-Setup.exe");
                     if (asset == null) throw new Exception("installateur absent de la version " + rel.tag_name);
-                    var exe = Path.Combine(Path.GetTempPath(), "MirrorPad-Setup.exe");
+                    var exe = Path.Combine(Path.GetTempPath(), "bSideDesk-Setup.exe");
                     if (string.IsNullOrEmpty(cfg.GitHubToken)) HttpGet(asset.browser_download_url, true, exe);
                     else HttpGet(asset.url, true, exe);
                     Log.Write("installateur " + rel.tag_name + " téléchargé, lancement");
@@ -561,7 +581,7 @@ namespace MirrorPad
                     try
                     {
                         var path = Inbox.Save(data);
-                        if (path != null) Post(() => Balloon("Photo reçue de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\MirrorPad)", ToolTipIcon.Info));
+                        if (path != null) Post(() => Balloon("Photo reçue de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\bSideDesk)", ToolTipIcon.Info));
                     }
                     catch (Exception e) { Log.Write("réception de fichier : " + e.Message); }
                     break;
@@ -601,7 +621,7 @@ namespace MirrorPad
                 try { using (var p = Process.Start(psi)) p.WaitForExit(10000); } catch { }
             }
             Process.Start(dir);
-            MessageBox.Show("Une image par écran a été enregistrée (ecran-0.png, ecran-1.png…).\n\nRepérez celle de l'écran virtuel puis indiquez son numéro dans Paramètres.", "MirrorPad");
+            MessageBox.Show("Une image par écran a été enregistrée (ecran-0.png, ecran-1.png…).\n\nRepérez celle de l'écran virtuel puis indiquez son numéro dans Paramètres.", "bSideDesk");
         }
 
         // ---------- raccourcis, démarrage, mode administrateur ----------
@@ -610,12 +630,12 @@ namespace MirrorPad
             var t = Type.GetTypeFromProgID("WScript.Shell");
             dynamic sh = Activator.CreateInstance(t);
             dynamic l = sh.CreateShortcut(path);
-            if (cfg.AdminMode) { l.TargetPath = Path.Combine(Environment.SystemDirectory, "schtasks.exe"); l.Arguments = "/run /tn MirrorPad"; l.WindowStyle = 7; }
+            if (cfg.AdminMode) { l.TargetPath = Path.Combine(Environment.SystemDirectory, "schtasks.exe"); l.Arguments = "/run /tn bSideDesk"; l.WindowStyle = 7; }
             else { l.TargetPath = Application.ExecutablePath; l.Arguments = ""; }
             l.WorkingDirectory = appDir;
-            var ico = Path.Combine(appDir, "MirrorPad.ico");
+            var ico = Path.Combine(appDir, "bSideDesk.ico");
             l.IconLocation = (File.Exists(ico) ? ico : Application.ExecutablePath) + ",0";
-            l.Description = "MirrorPad : iPad en écran supplémentaire";
+            l.Description = "bSideDesk : iPad en écran supplémentaire";
             l.Save();
         }
 
@@ -653,8 +673,8 @@ namespace MirrorPad
                   "$t = New-ScheduledTaskTrigger -AtLogOn -User '" + user + "'\n" +
                   "$p = New-ScheduledTaskPrincipal -UserId '" + user + "' -LogonType Interactive -RunLevel Highest\n" +
                   "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew\n" +
-                  "Register-ScheduledTask -TaskName 'MirrorPad' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
-                : "Unregister-ScheduledTask -TaskName 'MirrorPad' -Confirm:$false -ErrorAction SilentlyContinue";
+                  "Register-ScheduledTask -TaskName 'bSideDesk' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+                : "Unregister-ScheduledTask -TaskName 'bSideDesk' -Confirm:$false -ErrorAction SilentlyContinue";
             int rc;
             try { rc = RunElevated(code); } catch { return; }   // fenêtre UAC refusée
             if (rc != 0) { Balloon("Impossible de modifier la tâche planifiée (code " + rc + ").", ToolTipIcon.Error); return; }
@@ -668,7 +688,7 @@ namespace MirrorPad
         {
             using (var wc = new WebClient())
             {
-                wc.Headers["User-Agent"] = "MirrorPad";
+                wc.Headers["User-Agent"] = "bSideDesk";
                 if (!string.IsNullOrEmpty(cfg.GitHubToken)) wc.Headers["Authorization"] = "Bearer " + cfg.GitHubToken;
                 wc.Headers["Accept"] = binary ? "application/octet-stream" : "application/vnd.github+json";
                 if (file != null) { wc.DownloadFile(url, file); return null; }
@@ -690,9 +710,9 @@ namespace MirrorPad
                     if (manual) Post(() => Balloon("Déjà à jour (version " + localVersion + ").", ToolTipIcon.Info));
                     return;
                 }
-                var asset = (rel.assets ?? new GhAsset[0]).FirstOrDefault(a => a.name == "MirrorPad-Windows.zip");
+                var asset = (rel.assets ?? new GhAsset[0]).FirstOrDefault(a => a.name == "bSideDesk-Windows.zip");
                 if (asset == null) return;
-                var tmp = Path.Combine(Path.GetTempPath(), "mirrorpad-update");
+                var tmp = Path.Combine(Path.GetTempPath(), "bsidedesk-update");
                 if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
                 Directory.CreateDirectory(tmp);
                 var zip = Path.Combine(tmp, "update.zip");
@@ -700,7 +720,7 @@ namespace MirrorPad
                 else HttpGet(asset.url, true, zip);
                 var x = Path.Combine(tmp, "x");
                 ZipFile.ExtractToDirectory(zip, x);
-                if (!File.Exists(Path.Combine(x, "MirrorPad.exe"))) throw new Exception("archive incomplète");
+                if (!File.Exists(Path.Combine(x, "bSideDesk.exe"))) throw new Exception("archive incomplète");
                 Post(() => ApplyUpdate(x, remote));
             }
             catch (Exception e)
@@ -739,8 +759,8 @@ namespace MirrorPad
         void Restart()
         {
             Shutdown();
-            if (cfg.AdminMode) Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn MirrorPad") { CreateNoWindow = true, UseShellExecute = false });
-            else Process.Start(Path.Combine(appDir, "MirrorPad.exe"));
+            if (cfg.AdminMode) Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn bSideDesk") { CreateNoWindow = true, UseShellExecute = false });
+            else Process.Start(Path.Combine(appDir, "bSideDesk.exe"));
             ExitThread();
         }
 

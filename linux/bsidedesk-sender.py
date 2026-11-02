@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""MirrorPad pour Linux (session X11) : l'iPad devient un écran supplémentaire tactile.
+"""bSideDesk pour Linux (session X11) : l'iPad devient un écran supplémentaire tactile.
 
 Crée un moniteur virtuel à droite des écrans existants (xrandr --setmonitor), le capture avec
-ffmpeg (x11grab), l'envoie à l'app MirrorPad de l'iPad et rejoue les gestes avec xdotool.
+ffmpeg (x11grab), l'envoie à l'app bSideDesk de l'iPad et rejoue les gestes avec xdotool.
 
 Prérequis : sudo apt install ffmpeg xdotool x11-xserver-utils openssl zenity
 Connexion chiffrée (TLS) ; appairage au premier lancement (même code sur le PC et l'iPad).
-Usage     : python3 mirrorpad-sender.py [--ipad 192.168.1.130] [--fps 60] [--mbps 12]
+Usage     : python3 bsidedesk-sender.py [--ipad 192.168.1.130] [--fps 60] [--mbps 12]
 Wayland n'est pas pris en charge (ouvrir une session « GNOME sur Xorg » / X11).
 """
 import argparse, hashlib, hmac, json, os, secrets, select, signal, socket, ssl, subprocess, sys, threading, time, urllib.parse
 from pathlib import Path
 
-PORT, MONITOR = 7272, 'MirrorPad'   # canal chiffré unique (image + tactile + contrôle)
-CONFIG = Path.home() / '.config' / 'mirrorpad' / 'config.json'
+PORT, MONITOR = 7272, 'bSideDesk'   # canal chiffré unique (image + tactile + contrôle)
+CONFIG = Path.home() / '.config' / 'bsidedesk' / 'config.json'
+_OLD = Path.home() / '.config' / 'mirrorpad'   # ancien nom de l'app : réglages et certificat repris une fois
+if _OLD.is_dir() and not CONFIG.parent.exists():
+    import shutil as _sh
+    _sh.copytree(_OLD, CONFIG.parent)
 DEFAULT_SHORTCUTS = [('Copier', 'ctrl+c'), ('Coller', 'ctrl+v'), ('Couper', 'ctrl+x'), ('Annuler', 'ctrl+z'), ('Rétablir', 'ctrl+shift+z'),
                      ('Tout sélectionner', 'ctrl+a'), ('Enregistrer', 'ctrl+s'), ('Rechercher', 'ctrl+f'), ('Bureau', 'win+d'), ('Activités', 'win'),
                      ('Capture d\'écran', 'printscreen'), ('Terminal', 'ctrl+alt+t'), ('Verrouiller', 'win+l'), ('Fermer la fenêtre', 'alt+f4'),
@@ -49,10 +53,10 @@ def save_config(cfg):
     CONFIG.write_text(json.dumps(cfg, indent=2))
 
 
-# --- Détection de l'iPad (mDNS « _mirrorpad._tcp.local ») -------------------------------
+# --- Détection de l'iPad (mDNS « _bsidedesk._tcp.local ») -------------------------------
 def find_ipad(timeout=1.5):
     q = bytes([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-    for label in ('_mirrorpad', '_tcp', 'local'):
+    for label in ('_bsidedesk', '_tcp', 'local'):
         q += bytes([len(label)]) + label.encode()
     q += bytes([0, 0, 12, 0x80, 1])
     addrs = [a for a in run('hostname', '-I').stdout.split() if '.' in a] or ['0.0.0.0']
@@ -71,7 +75,7 @@ def find_ipad(timeout=1.5):
         ready, _, _ = select.select(socks, [], [], 0.1)
         for s in ready:
             data, src = s.recvfrom(4096)
-            if b'_mirrorpad' in data:
+            if b'_bsidedesk' in data:
                 found = src[0]
                 break
     for s in socks:
@@ -136,7 +140,7 @@ def identity():
     if not CERT.exists() or not KEY.exists():
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         r = run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '10950', '-subj',
-                '/CN=MirrorPad ' + socket.gethostname(), '-keyout', str(KEY), '-out', str(CERT))
+                '/CN=bSideDesk ' + socket.gethostname(), '-keyout', str(KEY), '-out', str(CERT))
         if r.returncode:
             sys.exit('openssl est nécessaire pour créer le certificat : sudo apt install openssl')
         os.chmod(KEY, 0o600)
@@ -151,7 +155,7 @@ def identity():
 def ask_pairing(name, code):
     text = f"« {name} » demande à se connecter à ce PC.\n\nVérifiez que l'iPad affiche ce code : {code[:3]} {code[3:]}\n\nAccepter ?"
     if os.environ.get('DISPLAY') and run('which', 'zenity').stdout:
-        return run('zenity', '--question', '--title=MirrorPad – Appairage', '--width=420', '--text=' + text).returncode == 0
+        return run('zenity', '--question', '--title=bSideDesk – Appairage', '--width=420', '--text=' + text).returncode == 0
     if sys.stdin.isatty():
         return input(text + ' [o/N] ').strip().lower() in ('o', 'oui', 'y', 'yes')
     log('appairage refusé : aucune fenêtre ni terminal pour confirmer (installez zenity)')
@@ -309,7 +313,7 @@ class Input:
     def xy(self, p):
         return str(int(self.mon.x + float(p[1]) * (self.mon.w - 1))), str(int(float(p[2]) * (self.mon.h - 1)))
 
-    # noms de touches MirrorPad -> noms xdotool
+    # noms de touches bSideDesk -> noms xdotool
     KEYS = {'win': 'super', 'esc': 'Escape', 'enter': 'Return', 'del': 'Delete', 'back': 'BackSpace', 'tab': 'Tab',
             'space': 'space', 'ins': 'Insert', 'home': 'Home', 'end': 'End', 'pgup': 'Prior', 'pgdn': 'Next',
             'left': 'Left', 'right': 'Right', 'up': 'Up', 'down': 'Down', 'printscreen': 'Print', 'apps': 'Menu',
@@ -387,7 +391,7 @@ class Input:
 
 # --- Boucle principale ------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description='MirrorPad pour Linux (X11)')
+    ap = argparse.ArgumentParser(description='bSideDesk pour Linux (X11)')
     ap.add_argument('--ipad', help="adresse de l'iPad (sinon détection automatique)")
     ap.add_argument('--fps', type=int)
     ap.add_argument('--mbps', type=int)
@@ -425,7 +429,7 @@ def main():
                 save_config(cfg)
             fails = 0
             if not cfg['ipad']:
-                log("iPad introuvable (app MirrorPad ouverte ?), nouvel essai…")
+                log("iPad introuvable (app bSideDesk ouverte ?), nouvel essai…")
                 time.sleep(3)
                 continue
         try:

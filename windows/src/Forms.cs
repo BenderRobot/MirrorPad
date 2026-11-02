@@ -4,14 +4,14 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace MirrorPad
+namespace bSideDesk
 {
     // Demande d'appairage : le même code doit s'afficher sur l'iPad
     public class PairingForm : Form
     {
         public PairingForm(string ipadName, string code)
         {
-            Text = "MirrorPad – Appairage"; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
+            Text = "bSideDesk – Appairage"; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen; TopMost = true; ShowInTaskbar = true;
             Font = new Font("Segoe UI", 10); ClientSize = new Size(420, 250); AutoScaleMode = AutoScaleMode.Dpi;
             var intro = new Label { Text = "« " + ipadName + " » demande à se connecter à ce PC.\nVérifiez que l'iPad affiche exactement ce code :", Location = new Point(20, 18), Size = new Size(380, 48) };
@@ -29,14 +29,14 @@ namespace MirrorPad
     {
         readonly Config cfg;
         CheckBox disc, auto, sleep, clip, usb, kb, prox; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc, side; ListBox paired;
-        public Action InstallMissing;   // télécharge et lance MirrorPad-Setup.exe
+        public Action InstallMissing;   // télécharge et lance bSideDesk-Setup.exe
         static readonly string[] SideKeys = { "right", "left", "above", "" };
         readonly string[] encKeys;
 
         public SettingsForm(Config c, string version = "", string status = "")
         {
             cfg = c;
-            Text = "MirrorPad – Paramètres"; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
+            Text = "bSideDesk – Paramètres"; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen; TopMost = true; Font = new Font("Segoe UI", 10);
             ClientSize = new Size(420, 470); AutoScaleMode = AutoScaleMode.Dpi;
             // bandeau aux couleurs de l'app : version, état de la connexion, composants installés
@@ -50,7 +50,7 @@ namespace MirrorPad
                 g.FillRectangle(br, 0, 0, 420, 150);
             }
             head.BackgroundImage = bg; head.BackgroundImageLayout = ImageLayout.Stretch;
-            head.Controls.Add(new Label { Text = "MirrorPad", Font = new Font("Segoe UI Semibold", 18), ForeColor = Color.White, BackColor = Color.Transparent, Location = new Point(16, 10), AutoSize = true });
+            head.Controls.Add(new Label { Text = "bSideDesk", Font = new Font("Segoe UI Semibold", 18), ForeColor = Color.White, BackColor = Color.Transparent, Location = new Point(16, 10), AutoSize = true });
             head.Controls.Add(new Label { Text = (version.Length > 0 ? "Version " + version + "  ·  " : "") + status, ForeColor = Color.FromArgb(235, 240, 255), BackColor = Color.Transparent, Location = new Point(18, 48), Size = new Size(390, 22) });
             string[] parts = {
                 Check(Screen.AllScreens.Length > 1 || !string.IsNullOrEmpty(c.VirtualDevice)) + " Écran virtuel",
@@ -126,7 +126,7 @@ namespace MirrorPad
             System.Net.IPAddress a;
             if ((ip.Text.Trim().Length > 0 || !disc.Checked) && !System.Net.IPAddress.TryParse(ip.Text.Trim(), out a))
             {
-                MessageBox.Show("Adresse IP invalide.", "MirrorPad"); return false;
+                MessageBox.Show("Adresse IP invalide.", "bSideDesk"); return false;
             }
             cfg.AutoDiscover = disc.Checked; cfg.IPad = ip.Text.Trim(); cfg.Output = (int)output.Value;
             cfg.Fps = int.Parse((string)fps.SelectedItem); cfg.Mbps = (int)mbps.Value;
