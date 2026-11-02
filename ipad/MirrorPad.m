@@ -1778,6 +1778,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _bar.onAction=^(NSString *keys){
   if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
   else if([keys isEqualToString:@"@numpad"])[w showNumpad];
+  else if([keys isEqualToString:@"@keyboard"]){typeof(self) s=w;if(s){if(s->_touch.isFirstResponder)[s->_touch resignFirstResponder];else [s showKeyboard];}}
   else [weakInput send:[NSString stringWithFormat:@"KS %@\n",MPEsc(keys)]];
  };
  [self.view addSubview:_bar];

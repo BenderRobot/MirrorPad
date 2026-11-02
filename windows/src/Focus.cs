@@ -28,7 +28,7 @@ namespace MirrorPad
             thread.SetApartmentState(ApartmentState.MTA);
             thread.Start();
         }
-        public void Stop() { running = false; lastKey = ""; shown = false; }
+        public void Stop() { running = false; lastKey = ""; shown = false; diagCount = 0; }
 
         void Loop(int g)
         {
@@ -58,6 +58,7 @@ namespace MirrorPad
                 else editable = false;
                 if (type == ComboBox && !Bool(Prop(el, ValueAvailable))) editable = false;   // liste déroulante simple
                 var r = Prop(el, Bounds) as double[];
+                Diagnose(type, editable, r);
                 if (!editable || r == null || r.Length < 4) { Hide(); return; }
 
                 var b = ScreenBounds != null ? ScreenBounds() : Rectangle.Empty;
@@ -78,6 +79,19 @@ namespace MirrorPad
                 if (Send != null) Send("KB 1 " + f((r[0] - b.Left) / b.Width) + " " + f((r[1] - b.Top) / b.Height) + " " + f(r[2] / b.Width) + " " + f(r[3] / b.Height));
             }
             finally { Marshal.ReleaseComObject(el); }
+        }
+
+        // Journal : après chaque appui (20 premiers par session), ce que Windows annonce comme élément actif
+        int diagCount; long diagTap;
+        void Diagnose(int type, bool editable, double[] r)
+        {
+            long t = Interlocked.Read(ref tapTicks);
+            if (t == 0 || t == diagTap || diagCount >= 20) return;
+            if ((DateTime.Now.Ticks - t) / 1e7 < 0.3) return;   // on laisse l'application prendre le focus
+            diagTap = t; diagCount++;
+            Log.Write("saisie : élément actif type " + type + (editable ? " (zone de saisie)" : " (pas une zone de saisie)") +
+                      (r != null && r.Length >= 4 ? " en " + (int)r[0] + "," + (int)r[1] + " " + (int)r[2] + "x" + (int)r[3] : " sans position") +
+                      ", appui en " + tapX + "," + tapY);
         }
 
         void Hide()

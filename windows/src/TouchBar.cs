@@ -35,10 +35,12 @@ namespace MirrorPad
               "Copier|ctrl+c", "Coller|ctrl+v", "Supprimer|del", "Propriétés|alt+enter", "Adresse|ctrl+l");
             P("teams,ms-teams", "Teams", "Micro|ctrl+shift+m", "Caméra|ctrl+shift+o", "Partager|ctrl+shift+e", "Lever la main|ctrl+shift+k",
               "Raccrocher|ctrl+shift+h", "Conversations|ctrl+2", "Calendrier|ctrl+4");
+            P("whatsapp,whatsapp.root", "WhatsApp", "Clavier|@keyboard", "Envoyer|enter", "Emoji|win+period", "Rechercher|ctrl+f",
+              "Nouvelle discussion|ctrl+n", "Discussion suivante|ctrl+tab", "Copier|ctrl+c", "Coller|ctrl+v");
             P("vlc,wmplayer,spotify,music.ui", "Lecteur", "⏮|prev", "⏯|playpause", "⏭|next", "Volume −|voldown", "Volume +|volup", "Muet|mute");
         }
 
-        static readonly string[] Default = { "Fenêtre ⇄ iPad|@swap", "Copier|ctrl+c", "Coller|ctrl+v", "Annuler|ctrl+z", "Rétablir|ctrl+y",
+        static readonly string[] Default = { "Fenêtre ⇄ iPad|@swap", "Clavier|@keyboard", "Copier|ctrl+c", "Coller|ctrl+v", "Annuler|ctrl+z", "Rétablir|ctrl+y",
                                              "Rechercher|ctrl+f", "Bureau|win+d", "Vue des tâches|win+tab", "Capture|win+shift+s", "Pavé numérique|@numpad" };
 
         // ligne « TB <titre> <bouton> <bouton>… » pour le programme au premier plan
