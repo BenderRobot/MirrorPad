@@ -32,6 +32,7 @@ namespace MirrorPad
         // ---- Tactile Windows natif : « F id:x:y:état … » (d = posé, m = déplacé, u = levé, c = annulé), tous les doigts à chaque trame
         void TouchFrame(string[] p)
         {
+            if (emuTouch) { EmulateTouch(p); return; }
             var list = new System.Collections.Generic.List<Native.POINTER_TYPE_INFO>();
             bool primaryDone = false;
             for (int i = 1; i < p.Length; i++)
@@ -58,10 +59,73 @@ namespace MirrorPad
             }
             if (list.Count == 0) return;
             bool ok = Native.InjectTouch(list.ToArray());
+            var last = list[0].touch.pointerInfo;
+            if (ok && list.Count == 1 && (last.pointerFlags & Native.PF_UP) != 0) CheckNative(false, last.ptPixelLocation.x, last.ptPixelLocation.y);
             if (!touchSeen) { touchSeen = true; Log.Write("tactile natif : premier geste reçu (" + list.Count + " doigt(s) en " + list[0].touch.pointerInfo.ptPixelLocation.x + "," + list[0].touch.pointerInfo.ptPixelLocation.y + ", écran " + Bounds + ") → " + (ok ? "injecté" : "refusé, erreur " + Native.PointerError) + ", fenêtre « " + Native.ForegroundTitle() + " »"); }
             else if (!ok && !touchWarned) { touchWarned = true; Log.Write("tactile natif refusé (erreur " + Native.PointerError + "), fenêtre « " + Native.ForegroundTitle() + " »"); }
         }
         bool touchWarned, penWarned, touchSeen, penSeen, penDown;
+
+        // Certains PC acceptent le tactile / stylet simulé sans rien en faire (aucune erreur, aucun effet).
+        // Indice fiable : un appui tactile réel déplace le curseur de la souris à l'endroit touché.
+        // Si le curseur n'a pas bougé après le premier appui, on passe en émulation souris pour toute la suite.
+        volatile bool emuTouch, emuPen; bool checkedTouch, checkedPen;
+        void CheckNative(bool pen, int x, int y)
+        {
+            if (pen ? checkedPen : checkedTouch) return;
+            if (pen) checkedPen = true; else checkedTouch = true;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                System.Threading.Thread.Sleep(120);
+                Native.POINT c;
+                if (!Native.GetCursorPos(out c)) return;
+                bool works = Math.Abs(c.x - x) <= 3 && Math.Abs(c.y - y) <= 3;
+                Log.Write((pen ? "stylet" : "tactile") + " natif " + (works ? "actif" : "sans effet sur ce PC (curseur resté en " + c.x + "," + c.y + ") : émulation souris activée"));
+                if (!works) { if (pen) emuPen = true; else emuTouch = true; }
+            });
+        }
+
+        // Émulation souris du tactile : 1 doigt = clic / glisser, 2 doigts = défilement
+        uint? emuPrimary; double emuLastCy = double.NaN; int emuWheelAcc;
+        void EmulateTouch(string[] p)
+        {
+            var pts = new System.Collections.Generic.List<Tuple<uint, int, int, string>>();
+            for (int i = 1; i < p.Length; i++)
+            {
+                var f = p[i].Split(':'); uint id; double nx, ny;
+                if (f.Length < 4 || !uint.TryParse(f[0], out id) || !Num(f[1], out nx) || !Num(f[2], out ny)) continue;
+                pts.Add(Tuple.Create(id, ToX(nx), ToY(ny), f[3]));
+            }
+            var active = pts.Where(t => t.Item4 == "d" || t.Item4 == "m").ToList();
+            if (active.Count >= 2)
+            {
+                if (leftDown) ReleaseLeft();
+                emuPrimary = null;
+                double cy = active.Take(2).Average(t => t.Item3);
+                if (!double.IsNaN(emuLastCy))
+                {
+                    emuWheelAcc += (int)Math.Round((cy - emuLastCy) * 3);
+                    int steps = emuWheelAcc / 40;
+                    if (steps != 0) { Native.mouse_event(Native.Wheel, 0, 0, steps * 40, UIntPtr.Zero); emuWheelAcc -= steps * 40; }
+                }
+                emuLastCy = cy;
+                return;
+            }
+            emuLastCy = double.NaN; emuWheelAcc = 0;
+            foreach (var t in pts)
+            {
+                if (emuPrimary == null && t.Item4 == "d" && active.Count == 1)
+                {
+                    emuPrimary = t.Item1; Native.SetCursorPos(t.Item2, t.Item3);
+                    Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true;
+                }
+                else if (emuPrimary == t.Item1)
+                {
+                    Native.SetCursorPos(t.Item2, t.Item3);
+                    if (t.Item4 == "u" || t.Item4 == "c") { ReleaseLeft(); emuPrimary = null; }
+                }
+            }
+        }
         public void ResetDiagnostics() { touchSeen = penSeen = touchWarned = penWarned = false; }
 
         // ---- Stylet : « PD x y pression [e] », « PM … », « PU x y » (e = gomme)
@@ -72,6 +136,14 @@ namespace MirrorPad
             if (p.Length >= 4) Num(p[3], out pr);
             bool eraser = p.Length >= 5 && p[4] == "e";
             int x = ToX(nx), y = ToY(ny);
+            if (emuPen)
+            {
+                // émulation souris du stylet : le trait suit le bouton gauche (sans pression)
+                Native.SetCursorPos(x, y);
+                if (p[0] == "PD") { Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; }
+                else if (p[0] == "PU") ReleaseLeft();
+                return;
+            }
             var t = new Native.POINTER_TYPE_INFO { type = Native.PT_PEN };
             t.pen.pointerInfo.pointerType = Native.PT_PEN;
             t.pen.pointerInfo.ptPixelLocation = new Native.POINT { x = x, y = y };
@@ -89,6 +161,7 @@ namespace MirrorPad
                     penDown = false; break;
             }
             bool ok = Native.InjectPen(t);
+            if (ok && p[0] == "PU") CheckNative(true, x, y);
             if (!penSeen) { penSeen = true; Log.Write("stylet : premier trait reçu (" + x + "," + y + ", pression " + t.pen.pressure + ") → " + (ok ? "injecté" : "refusé, erreur " + Native.PointerError) + ", fenêtre « " + Native.ForegroundTitle() + " »"); }
             else if (!ok && !penWarned) { penWarned = true; Log.Write("stylet refusé (erreur " + Native.PointerError + "), fenêtre « " + Native.ForegroundTitle() + " »"); }
         }

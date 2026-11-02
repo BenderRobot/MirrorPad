@@ -9,6 +9,7 @@ namespace MirrorPad
     {
         [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
         [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
         [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
