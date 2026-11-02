@@ -1478,45 +1478,57 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
 @end
 
-// Touch Bar contextuelle : bande de raccourcis en bas de l'écran, envoyée par le PC selon l'application active
+// Touch Bar contextuelle, façon MacBook : bande noire collée au bas de l'écran. L'image du PC s'arrête juste
+// au-dessus (la barre des tâches Windows reste visible). Repliable : il ne reste qu'une petite languette.
+static const CGFloat MPTouchBarHeight=50;
 @interface MPTouchBar : UIView
-@property(nonatomic,copy) void (^onAction)(NSString *keys);   // « ctrl+s », « f5 », « @swap », « @numpad »…
+@property(nonatomic,copy) void (^onAction)(NSString *keys);   // « ctrl+s », « f5 », « @swap », « @numpad », « @keyboard »…
+@property(nonatomic,copy) void (^onFold)(void);               // repliée / dépliée : l'image doit être recalculée
 @property(nonatomic) BOOL collapsed;
 - (void)setTitle:(NSString*)title items:(NSArray<NSArray<NSString*>*>*)items;
 @end
-@implementation MPTouchBar { UIVisualEffectView *_blur; UILabel *_title; UIScrollView *_scroll; UIStackView *_stack; UIButton *_fold,*_tab; NSArray *_items; }
+@implementation MPTouchBar { UIView *_strip; CAGradientLayer *_line; UILabel *_title; UIScrollView *_scroll; UIStackView *_stack; UIButton *_fold,*_tab; NSArray *_items; }
 - (instancetype)initWithFrame:(CGRect)f {
  if(!(self=[super initWithFrame:f]))return nil;
- _blur=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
- _blur.layer.cornerRadius=18;_blur.clipsToBounds=YES;_blur.layer.borderWidth=1;_blur.layer.borderColor=[UIColor colorWithWhite:1 alpha:.18].CGColor;
- [self addSubview:_blur];
- CAGradientLayer *g=[CAGradientLayer layer];g.colors=@[(id)MPRGB(0x16C6FF,.22).CGColor,(id)MPRGB(0x3B5BFF,.18).CGColor,(id)MPRGB(0x7A2EF6,.24).CGColor];
- g.startPoint=CGPointMake(0,.5);g.endPoint=CGPointMake(1,.5);g.frame=CGRectMake(0,0,3000,80);[_blur.contentView.layer addSublayer:g];
- _title=MPLabel(@"",13,UIFontWeightSemibold,.75,.3);[_blur.contentView addSubview:_title];
- _scroll=[UIScrollView new];_scroll.showsHorizontalScrollIndicator=NO;[_blur.contentView addSubview:_scroll];
- _stack=[UIStackView new];_stack.spacing=8;[_scroll addSubview:_stack];
+ _strip=[UIView new];_strip.backgroundColor=[UIColor colorWithWhite:.04 alpha:1];[self addSubview:_strip];
+ _line=[CAGradientLayer layer];   // fin filet aux couleurs de l'app sur le bord supérieur
+ _line.colors=@[(id)MPRGB(0x16C6FF,.9).CGColor,(id)MPRGB(0x3B5BFF,.9).CGColor,(id)MPRGB(0x7A2EF6,.9).CGColor];
+ _line.startPoint=CGPointMake(0,.5);_line.endPoint=CGPointMake(1,.5);[_strip.layer addSublayer:_line];
+ _title=MPLabel(@"",11,UIFontWeightBold,.5,.8);_title.textAlignment=NSTextAlignmentLeft;[_strip addSubview:_title];
+ _scroll=[UIScrollView new];_scroll.showsHorizontalScrollIndicator=NO;_scroll.alwaysBounceHorizontal=YES;[_strip addSubview:_scroll];
+ _stack=[UIStackView new];_stack.spacing=6;[_scroll addSubview:_stack];
  _fold=[UIButton buttonWithType:UIButtonTypeSystem];[_fold setTitle:@"⌄" forState:UIControlStateNormal];
- _fold.titleLabel.font=[UIFont systemFontOfSize:24 weight:UIFontWeightBold];[_fold setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
- [_fold addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[_blur.contentView addSubview:_fold];
- _tab=MPGlassButton(@"⌃",20);_tab.layer.cornerRadius=16;_tab.hidden=YES;
- [_tab addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[self addSubview:_tab];
+ _fold.titleLabel.font=[UIFont systemFontOfSize:22 weight:UIFontWeightBold];[_fold setTitleColor:[UIColor colorWithWhite:1 alpha:.7] forState:UIControlStateNormal];
+ [_fold addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[_strip addSubview:_fold];
+ // languette visible quand la barre est repliée (coin bas droit)
+ _tab=[UIButton buttonWithType:UIButtonTypeSystem];[_tab setTitle:@"⌃" forState:UIControlStateNormal];
+ _tab.titleLabel.font=[UIFont systemFontOfSize:18 weight:UIFontWeightBold];[_tab setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ _tab.backgroundColor=[UIColor colorWithWhite:.04 alpha:.85];_tab.layer.cornerRadius=10;_tab.layer.borderWidth=1;_tab.layer.borderColor=MPRGB(0x3B5BFF,.8).CGColor;
+ _tab.hidden=YES;[_tab addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];[self addSubview:_tab];
  return self;
 }
-- (UIView*)hitTest:(CGPoint)p withEvent:(UIEvent*)e {UIView *v=[super hitTest:p withEvent:e];return v==self?nil:v;}   // le reste de la bande laisse passer le toucher
+- (UIView*)hitTest:(CGPoint)p withEvent:(UIEvent*)e {UIView *v=[super hitTest:p withEvent:e];return v==self?nil:v;}   // hors barre / languette : le toucher passe au PC
 - (void)toggle {
  self.collapsed=!self.collapsed;[MPDefaults() setBool:self.collapsed forKey:@"touchBarFolded"];
- [UIView animateWithDuration:.25 animations:^{[self layoutSubviews];}];
+ if(self.onFold)self.onFold();
 }
-- (void)setCollapsed:(BOOL)c {_collapsed=c;_blur.alpha=c?0:1;_tab.hidden=!c;[self setNeedsLayout];}
+- (void)setCollapsed:(BOOL)c {
+ _collapsed=c;
+ [UIView animateWithDuration:.25 animations:^{[self layoutStrip];}];
+}
+- (void)layoutStrip {
+ CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+ _strip.frame=CGRectMake(0,_collapsed?h:0,w,h);
+ _tab.hidden=!_collapsed;_tab.frame=CGRectMake(w-54,h-30,46,26);
+}
 - (void)layoutSubviews {
  [super layoutSubviews];
+ [self layoutStrip];
  CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
- _blur.frame=CGRectMake(10,_collapsed?h:4,w-20,h-12);
- _tab.frame=CGRectMake(w-56,h-40,44,32);
- CGFloat bh=_blur.bounds.size.height;
- _title.frame=CGRectMake(16,0,120,bh);
- _fold.frame=CGRectMake(_blur.bounds.size.width-48,0,44,bh);
- _scroll.frame=CGRectMake(130,6,_blur.bounds.size.width-130-52,bh-12);
+ _line.frame=CGRectMake(0,0,w,1.5);
+ _title.frame=CGRectMake(14,0,96,h);
+ _fold.frame=CGRectMake(w-46,0,44,h);
+ _scroll.frame=CGRectMake(112,7,w-112-50,h-12);
  CGSize sz=[_stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
  _stack.frame=CGRectMake(0,0,fmax(sz.width,1),_scroll.bounds.size.height);
  _scroll.contentSize=_stack.frame.size;
@@ -1525,21 +1537,25 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _title.text=title.uppercaseString;_items=items;
  for(UIView *v in _stack.arrangedSubviews){[_stack removeArrangedSubview:v];[v removeFromSuperview];}
  for(NSUInteger i=0;i<items.count;i++){
-  UIButton *b=MPGlassButton(items[i][0],15);b.tag=(NSInteger)i;b.layer.cornerRadius=12;
-  b.contentEdgeInsets=UIEdgeInsetsMake(0,14,0,14);
-  if([items[i][1] hasPrefix:@"@"])b.backgroundColor=MPRGB(0x3B5BFF,.45);
+  // touches façon Touch Bar : gris anthracite arrondi, actions MirrorPad en bleu
+  UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.tag=(NSInteger)i;
+  [b setTitle:items[i][0] forState:UIControlStateNormal];[b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  b.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+  b.contentEdgeInsets=UIEdgeInsetsMake(0,16,0,16);b.layer.cornerRadius=8;
+  b.backgroundColor=[items[i][1] hasPrefix:@"@"]?MPRGB(0x3B5BFF,.85):[UIColor colorWithWhite:.22 alpha:1];
   [b addTarget:self action:@selector(press:) forControlEvents:UIControlEventTouchUpInside];
   [_stack addArrangedSubview:b];
  }
  [self setNeedsLayout];
- // petit « flash » quand l'application change
- _title.alpha=.2;[UIView animateWithDuration:.4 animations:^{self->_title.alpha=.75;}];
+ _scroll.contentOffset=CGPointZero;
+ _title.alpha=.1;[UIView animateWithDuration:.4 animations:^{self->_title.alpha=.5;}];
 }
 - (void)press:(UIButton*)b {
  if((NSUInteger)b.tag>=_items.count)return;
  if(self.onAction)self.onAction(_items[(NSUInteger)b.tag][1]);
- [UIView animateWithDuration:.08 animations:^{b.transform=CGAffineTransformMakeScale(.92,.92);}
-  completion:^(BOOL d){(void)d;[UIView animateWithDuration:.18 animations:^{b.transform=CGAffineTransformIdentity;}];}];
+ UIColor *bg=b.backgroundColor;
+ [UIView animateWithDuration:.06 animations:^{b.backgroundColor=[UIColor colorWithWhite:.45 alpha:1];}
+  completion:^(BOOL d){(void)d;[UIView animateWithDuration:.2 animations:^{b.backgroundColor=bg;}];}];
 }
 @end
 
@@ -1771,9 +1787,10 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  [self.view addSubview:_hud];
 
  // Touch Bar contextuelle (en bas) : les boutons changent avec l'application active du PC
- _bar=[[MPTouchBar alloc] initWithFrame:CGRectMake(0,self.view.bounds.size.height-74,self.view.bounds.size.width,74)];
+ _bar=[[MPTouchBar alloc] initWithFrame:CGRectMake(0,self.view.bounds.size.height-MPTouchBarHeight,self.view.bounds.size.width,MPTouchBarHeight)];
  _bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;_bar.hidden=YES;
  _bar.collapsed=[MPDefaults() boolForKey:@"touchBarFolded"];
+ _bar.onFold=^{typeof(self) s=w;if(!s)return;[UIView animateWithDuration:.25 animations:^{[s layoutContent];}];};
  [_bar setTitle:@"Bureau" items:@[@[@"Fenêtre ⇄ iPad",@"@swap"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]]];
  _bar.onAction=^(NSString *keys){
   if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
@@ -1932,7 +1949,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _touch.penEraser=[d boolForKey:@"penEraser"];
  _dock.hidden=!_streaming;
  _hud.hidden=![d boolForKey:@"hud"]||!_streaming;
- _bar.hidden=![d boolForKey:@"touchBar"]||!_streaming||_kbHeight>0;   // masquée pendant la saisie au clavier
+ BOOL barHidden=![d boolForKey:@"touchBar"]||!_streaming||_kbHeight>0;   // masquée pendant la saisie au clavier
+ if(barHidden!=_bar.hidden){_bar.hidden=barHidden;[self layoutContent];}
 }
 - (void)showSettings {
  if(_touch.isFirstResponder)[_touch resignFirstResponder];
@@ -2201,10 +2219,22 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)viewDidLayoutSubviews {
  [super viewDidLayoutSubviews];
+ [self layoutContent];
+}
+// Zone de l'image du PC : tout l'écran, moins la Touch Bar quand elle est dépliée (la barre des tâches reste visible)
+- (CGRect)contentRect {
+ CGRect r=self.view.bounds;
+ if(_bar&&!_bar.hidden&&!_bar.collapsed)r.size.height-=MPTouchBarHeight;
+ return r;
+}
+- (void)layoutContent {
+ CGRect r=[self contentRect];
  [CATransaction begin];[CATransaction setDisableActions:YES];
  // bounds + position (et pas frame) : la translation éventuelle « clavier » reste appliquée
- _video.bounds=self.view.bounds;_video.position=CGPointMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds));
+ _video.bounds=CGRectMake(0,0,r.size.width,r.size.height);_video.position=CGPointMake(CGRectGetMidX(r),CGRectGetMidY(r));
  [CATransaction commit];
+ _touch.bounds=CGRectMake(0,0,r.size.width,r.size.height);_touch.center=CGPointMake(CGRectGetMidX(r),CGRectGetMidY(r));
+ _bar.frame=CGRectMake(0,self.view.bounds.size.height-MPTouchBarHeight,self.view.bounds.size.width,MPTouchBarHeight);
 }
 - (void)enqueue:(CMSampleBufferRef)sb gen:(unsigned)gen {
  if(gen!=_decoderGen)return;   // image d'un flux précédent
