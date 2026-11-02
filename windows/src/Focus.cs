@@ -83,6 +83,20 @@ namespace MirrorPad
             finally { if (el != null) Marshal.ReleaseComObject(el); if (walker != null) Marshal.ReleaseComObject(walker); }
         }
 
+        // Applis totalement muettes pour Windows (WhatsApp : seule sa fenêtre est visible, pas ses champs).
+        // Leur zone de rédaction est toujours au même endroit : la bande du bas de la conversation.
+        static bool ComposerTap(int x, int y, double[] win, out double[] field)
+        {
+            field = null;
+            IntPtr h; var proc = (TouchBar.ForegroundProcess(out h) ?? "").ToLowerInvariant();
+            if (proc != "whatsapp" && proc != "whatsapp.root") return false;
+            double band = Math.Max(90, win[3] * 0.08);   // ≈ hauteur de la barre de saisie
+            bool inChat = x > win[0] + win[2] * 0.30 || win[2] < 900;   // la colonne de gauche = liste des discussions (sauf fenêtre étroite)
+            if (!inChat || y < win[1] + win[3] - band || y > win[1] + win[3]) return false;
+            field = new[] { win[0], win[1] + win[3] - band, win[2], band };
+            return true;
+        }
+
         void Check(IUIAutomation uia)
         {
             IUIAutomationElement el;
@@ -105,6 +119,7 @@ namespace MirrorPad
                 {
                     int pt; double[] pr;
                     if (EditableAtPoint(uia, tx, ty, out pt, out pr)) { type = pt; r = pr; editable = true; viaPoint = true; }
+                    else if (!editable && fr != null && fr.Length >= 4 && ComposerTap(tx, ty, fr, out pr)) { r = pr; editable = true; viaPoint = true; }
                 }
                 Diagnose(type, editable, r);
                 if (!editable)
@@ -125,6 +140,7 @@ namespace MirrorPad
                 lastKey = type + ":" + (int)r[0] + ":" + (int)r[1] + ":" + (int)r[2] + ":" + (int)r[3];
                 shown = true; shownFocusKey = focusKey;
                 if (viaPoint) Log.Write("saisie détectée sous le doigt (l'application ne signale pas son champ actif)");
+                shownFocusKey = focusKey;
                 Func<double, string> f = v => Math.Max(0, Math.Min(1, v)).ToString("0.0000", CultureInfo.InvariantCulture);
                 if (Send != null) Send("KB 1 " + f((r[0] - b.Left) / b.Width) + " " + f((r[1] - b.Top) / b.Height) + " " + f(r[2] / b.Width) + " " + f(r[3] / b.Height));
             }
@@ -139,9 +155,10 @@ namespace MirrorPad
             if (t == 0 || t == diagTap || diagCount >= 20) return;
             if ((DateTime.Now.Ticks - t) / 1e7 < 0.3) return;   // on laisse l'application prendre le focus
             diagTap = t; diagCount++;
+            IntPtr fgh;
             Log.Write("saisie : élément actif type " + type + (editable ? " (zone de saisie)" : " (pas une zone de saisie)") +
                       (r != null && r.Length >= 4 ? " en " + (int)r[0] + "," + (int)r[1] + " " + (int)r[2] + "x" + (int)r[3] : " sans position") +
-                      ", appui en " + tapX + "," + tapY);
+                      ", appui en " + tapX + "," + tapY + ", appli « " + (TouchBar.ForegroundProcess(out fgh) ?? "?") + " »");
         }
 
         void Hide()
