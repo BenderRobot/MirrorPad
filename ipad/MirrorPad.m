@@ -427,6 +427,7 @@ done:
 @end
 @implementation MPTouchView {
  NSMutableDictionary<NSValue*,NSNumber*> *_ids;   // doigt -> numéro de contact (tactile natif)
+ BOOL _quad,_quadMoved;     // tactile natif : 4 doigts posés = geste réservé à l'iPad (réglages)
  int _mode;                 // 0 rien, 1 un doigt, 2 deux doigts, 3 trois doigts
  BOOL _dragging,_moved,_longFired,_decided,_pinching;
  __weak UITouch *_primary;
@@ -477,6 +478,18 @@ done:
  if(ts.count<2)return 0;
  CGPoint a=[ts[0] locationInView:self],b=[ts[1] locationInView:self];
  return hypot(a.x-b.x,a.y-b.y);
+}
+// Tactile natif : annule côté PC tous les contacts en cours (avant un geste réservé à l'iPad)
+- (void)cancelNative:(UIEvent*)e {
+ NSMutableString *f=[NSMutableString stringWithString:@"F"];
+ for(UITouch *t in [e touchesForView:self]){
+  NSNumber *n=_ids[[NSValue valueWithNonretainedObject:t]];
+  if(!n)continue;
+  CGPoint q=[self norm:[t locationInView:self]];
+  [f appendFormat:@" %@:%.5f:%.5f:c",n,q.x,q.y];
+ }
+ [_ids removeAllObjects];
+ if(f.length>1)[self out:[f stringByAppendingString:@"\n"]];
 }
 // Tactile Windows natif : tous les doigts posés, à chaque évènement (« F id:x:y:état … »)
 - (void)touchFrame:(UIEvent*)e {
@@ -531,7 +544,12 @@ done:
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
  (void)touches;
  [self stopInertia];
- if(_inputMode==1){[self touchFrame:e];return;}
+ if(_inputMode==1){
+  NSArray *all=[self active:e];
+  if(all.count>=4&&!_quad){[self cancelNative:e];_quad=YES;_quadMoved=NO;_centroidStart=[self centroid:all];}
+  if(!_quad)[self touchFrame:e];
+  return;
+ }
  NSArray *a=[self active:e];
  if(a.count>=3){
   [self cancelLongPress];
@@ -551,7 +569,14 @@ done:
 }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
  (void)touches;
- if(_inputMode==1){[self touchFrame:e];return;}
+ if(_inputMode==1){
+  if(_quad){
+   NSArray *all=[self active:e];
+   if(all.count>=3){CGPoint c=[self centroid:all];if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>40)_quadMoved=YES;}
+   return;
+  }
+  [self touchFrame:e];return;
+ }
  NSArray *a=[self active:e];
  if(_mode==1&&_primary&&_inputMode==2){
   if(_dragging){_last=[_primary locationInView:self];[self pen:@"PM" touch:_primary at:_last];}
@@ -584,7 +609,14 @@ done:
  }
 }
 - (void)finish:(UIEvent*)e cancelled:(BOOL)cancelled {
- if(_inputMode==1){[self touchFrame:e];return;}
+ if(_inputMode==1){
+  if(_quad){
+   // 4 doigts : on attend qu'ils soient tous levés ; un simple appui (sans glisser) ouvre les réglages
+   if([self active:e].count==0){BOOL fire=!_quadMoved&&!cancelled;_quad=NO;if(fire&&self.onFourFingerTap)self.onFourFingerTap();}
+   return;
+  }
+  [self touchFrame:e];return;
+ }
  if(_mode==1&&_inputMode==2&&_dragging){[self pen:@"PU" touch:nil at:_last];_dragging=NO;}
  if([self active:e].count>0)return; // on attend que tous les doigts soient levés
  [self cancelLongPress];
