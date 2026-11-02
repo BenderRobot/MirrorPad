@@ -15,6 +15,9 @@ namespace MirrorPad
         public Action<string> Send;            // « KB 1 x y w h » (zone normalisée) / « KB 0 »
         Thread thread; volatile bool running; volatile int gen;
         string lastKey = ""; bool shown;
+        // dernier appui (clic) de l'utilisateur sur l'écran de l'iPad : seul un appui DANS une zone de saisie ouvre le clavier
+        volatile int tapX, tapY; long tapTicks;
+        public void Tapped(int x, int y) { tapX = x; tapY = y; Interlocked.Exchange(ref tapTicks, DateTime.Now.Ticks); }
 
         public void Start()
         {
@@ -61,9 +64,15 @@ namespace MirrorPad
                 double cx = r[0] + r[2] / 2, cy = r[1] + r[3] / 2;
                 if (b.Width <= 0 || cx < b.Left || cx >= b.Right || cy < b.Top || cy >= b.Bottom) { Hide(); return; }   // pas sur l'iPad
 
-                // nouvelle zone (ou zone déplacée) : on montre le clavier une seule fois, l'utilisateur peut le refermer
+                // le clavier ne s'ouvre que si l'utilisateur vient de toucher CETTE zone (pas un champ qui prend
+                // le focus tout seul, comme la recherche d'une page qui se charge)
+                long ticks = Interlocked.Read(ref tapTicks);
+                double since = (DateTime.Now.Ticks - ticks) / 1e7;
+                if (ticks == 0 || since > 1.2 || since < 0.12) return;   // pas d'appui récent (ou focus pas encore à jour)
+                int tx = tapX, ty = tapY;
+                if (tx < r[0] - 12 || tx > r[0] + r[2] + 12 || ty < r[1] - 12 || ty > r[1] + r[3] + 12) return;   // appui ailleurs
+                Interlocked.Exchange(ref tapTicks, 0);   // cet appui est traité
                 string key = type + ":" + (int)r[0] + ":" + (int)r[1] + ":" + (int)r[2] + ":" + (int)r[3];
-                if (key == lastKey) return;
                 lastKey = key; shown = true;
                 Func<double, string> f = v => Math.Max(0, Math.Min(1, v)).ToString("0.0000", CultureInfo.InvariantCulture);
                 if (Send != null) Send("KB 1 " + f((r[0] - b.Left) / b.Width) + " " + f((r[1] - b.Top) / b.Height) + " " + f(r[2] / b.Width) + " " + f(r[3] / b.Height));

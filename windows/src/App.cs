@@ -253,7 +253,7 @@ namespace MirrorPad
                 input.ResetDiagnostics();
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
-                if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); focus.Start(); }
+                if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); input.Tapped = focus.Tapped; focus.Start(); }
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));

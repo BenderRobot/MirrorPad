@@ -19,7 +19,8 @@ namespace MirrorPad
         int rotSeq;                                 // numéro de la dernière rotation (rotations rapprochées)
         public Action<string> Reply;                // envoi d'une ligne à l'iPad
         public Action RestartStream;                // relancer ffmpeg (rotation, qualité)
-        public Action Placed;                       // après une rotation : replacer l'écran (gauche / droite / dessus)
+        public Action Placed;
+        public Action<int, int> Tapped;             // appui / clic de l'utilisateur (détection des zones de saisie)                       // après une rotation : replacer l'écran (gauche / droite / dessus)
         public Action<int> HoldStream;              // couper ffmpeg et attendre n ms avant de le relancer (rotation)
         public Action Sleep;                        // l'iPad se verrouille
         public Action<string[]> Media;              // CAM / MIC / CB : traités par l'application
@@ -61,6 +62,7 @@ namespace MirrorPad
             if (list.Count == 0) return;
             bool ok = Native.InjectTouch(list.ToArray());
             var last = list[0].touch.pointerInfo;
+            if (list.Count == 1 && (last.pointerFlags & Native.PF_UP) != 0 && Tapped != null) Tapped(last.ptPixelLocation.x, last.ptPixelLocation.y);
             if (ok && list.Count == 1 && (last.pointerFlags & Native.PF_UP) != 0) CheckNative(false, last.ptPixelLocation.x, last.ptPixelLocation.y);
             if (!touchSeen) { touchSeen = true; Log.Write("tactile natif : premier geste reçu (" + list.Count + " doigt(s) en " + list[0].touch.pointerInfo.ptPixelLocation.x + "," + list[0].touch.pointerInfo.ptPixelLocation.y + ", écran " + Bounds + ") → " + (ok ? "injecté" : "refusé, erreur " + Native.PointerError) + ", fenêtre « " + Native.ForegroundTitle() + " »"); }
             else if (!ok && !touchWarned) { touchWarned = true; Log.Write("tactile natif refusé (erreur " + Native.PointerError + "), fenêtre « " + Native.ForegroundTitle() + " »"); }
@@ -121,11 +123,11 @@ namespace MirrorPad
                     else
                     {
                         // défilement fin : petits crans à chaque mouvement (les navigateurs les lissent)
-                        emuScroll += dy * 3;
+                        emuScroll += dy * ScrollGain;
                         int units = (int)emuScroll;
                         if (units != 0) { Native.mouse_event(Native.Wheel, 0, 0, units, UIntPtr.Zero); emuScroll -= units; }
                         var now = DateTime.Now; double dt = (now - emuLastMove).TotalSeconds;
-                        if (dt > 0 && dt < 0.1) emuVelocity = emuVelocity * 0.6 + (dy * 3 / dt) * 0.4;   // unités molette / s
+                        if (dt > 0 && dt < 0.1) emuVelocity = emuVelocity * 0.6 + (dy * ScrollGain / dt) * 0.4;   // unités molette / s
                         emuLastMove = now;
                     }
                 }
@@ -136,7 +138,7 @@ namespace MirrorPad
             if (active.Count == 0 && emuTwo)
             {
                 // doigts levés en plein mouvement : le défilement continue et ralentit (inertie)
-                if (Math.Abs(emuVelocity) > 300 && (DateTime.Now - emuLastMove).TotalSeconds < 0.08) StartInertia(emuVelocity);
+                if (Math.Abs(emuVelocity) > 400 && (DateTime.Now - emuLastMove).TotalSeconds < 0.08) StartInertia(Math.Max(-2500, Math.Min(2500, emuVelocity)));
                 emuVelocity = 0;
             }
             if (active.Count > 0) StopInertia();
@@ -173,12 +175,14 @@ namespace MirrorPad
                             Native.MoveTo(emuDownX, emuDownY);
                             Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero);
                             Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero);
+                            if (Tapped != null) Tapped(emuDownX, emuDownY);
                         }
                         emuPrimary = null; emuDragging = false;
                     }
                 }
             }
         }
+        const double ScrollGain = 1.2;
         double emuScroll, emuVelocity; DateTime emuLastMove;
         System.Threading.Timer inertia; double inertiaV;
         void StartInertia(double v)
@@ -186,8 +190,8 @@ namespace MirrorPad
             StopInertia(); inertiaV = v;
             inertia = new System.Threading.Timer(_ =>
             {
-                inertiaV *= 0.94;
-                if (Math.Abs(inertiaV) < 120) { StopInertia(); return; }
+                inertiaV *= 0.92;
+                if (Math.Abs(inertiaV) < 150) { StopInertia(); return; }
                 emuScroll += inertiaV / 60;
                 int units = (int)emuScroll;
                 if (units != 0) { Native.mouse_event(Native.Wheel, 0, 0, units, UIntPtr.Zero); emuScroll -= units; }
@@ -219,7 +223,7 @@ namespace MirrorPad
                 // émulation souris du stylet : le trait suit le bouton gauche (sans pression)
                 Native.MoveTo(x, y);
                 if (p[0] == "PD") { Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; }
-                else if (p[0] == "PU") ReleaseLeft();
+                else if (p[0] == "PU") { ReleaseLeft(); if (Tapped != null) Tapped(x, y); }
                 return;
             }
             var t = new Native.POINTER_TYPE_INFO { type = Native.PT_PEN };
@@ -283,7 +287,7 @@ namespace MirrorPad
                 switch (p[0])
                 {
                     case "D": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; break;
-                    case "U": ReleaseLeft(); break;
+                    case "U": ReleaseLeft(); if (Tapped != null) Tapped((int)(b.Left + nx * (b.Width - 1)), (int)(b.Top + ny * (b.Height - 1))); break;
                     case "R": Native.mouse_event(Native.RightDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.RightUp, 0, 0, 0, UIntPtr.Zero); break;
                 }
                 return;
@@ -296,7 +300,10 @@ namespace MirrorPad
                 case "CAM": case "MIC": case "CB": case "SND": if (Media != null) Media(p); break;
                 case "PD": case "PM": case "PU": Pen(p); break;
                 case "RM": if (p.Length >= 3 && int.TryParse(p[1], out dx) && int.TryParse(p[2], out dy)) Native.MoveRelative(dx, dy); break;
-                case "CL": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero); break;
+                case "CL":
+                    Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero);
+                    Native.POINT cp; if (Tapped != null && Native.GetCursorPos(out cp)) Tapped(cp.x, cp.y);
+                    break;
                 case "CR": Native.mouse_event(Native.RightDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.RightUp, 0, 0, 0, UIntPtr.Zero); break;
                 case "DD": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; break;
                 case "DU": ReleaseLeft(); break;

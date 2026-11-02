@@ -533,11 +533,12 @@ done:
  [self ripple:_start color:[UIColor colorWithRed:.55 green:.75 blue:1 alpha:1]];
 }
 // Molette : 12 points de déplacement = 40 unités Windows (120 = un cran)
+static const CGFloat MPScrollGain=2.4;
 - (void)scrollBy:(CGFloat)dy {
- // défilement fin : petits crans (≈ 3,3 unités Windows par point), lissés par les navigateurs et Office
+ // défilement fin : le contenu suit le doigt (≈ 2,4 unités Windows par point ; 120 = un cran ≈ 100 px)
  _scrollAcc+=dy;
- int units=(int)(_scrollAcc*40/12);
- if(units){_scrollAcc-=units*12.0/40;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
+ int units=(int)(_scrollAcc*MPScrollGain);
+ if(units){_scrollAcc-=units/MPScrollGain;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
 }
 - (void)stopInertia {[_inertia invalidate];_inertia=nil;}
 - (void)inertiaTick:(CADisplayLink*)link {
@@ -1384,8 +1385,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   if(hypot(p.x-_start.x,p.y-_start.y)>6)_tap=NO;
  } else if(a.count==2){
   CGPoint c=[self centroid:a];CGFloat dy=c.y-_scrollRef;_scrollRef=c.y;_scrollAcc+=dy;_scrollTotal+=fabs(dy);
-  int units=(int)(_scrollAcc*40/12);
-  if(units){_scrollAcc-=units*12.0/40;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
+  int units=(int)(_scrollAcc*MPScrollGain);
+  if(units){_scrollAcc-=units/MPScrollGain;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
   if(_scrollTotal>6)_tap=NO;
  } else if(a.count>=3){
   _c3=[self centroid:a];
