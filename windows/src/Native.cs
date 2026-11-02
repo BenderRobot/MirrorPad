@@ -96,6 +96,19 @@ namespace MirrorPad
 
         public static void MoveRelative(int dx, int dy) { mouse_event(0x1, (uint)dx, (uint)dy, 0, UIntPtr.Zero); }
 
+        // Déplacement absolu « réel » (SendInput) : contrairement à SetCursorPos, chaque position intermédiaire
+        // arrive à l'application comme un mouvement de souris -> les traits suivent le doigt dans Paint, etc.
+        public static void MoveTo(int x, int y)
+        {
+            var v = System.Windows.Forms.SystemInformation.VirtualScreen;
+            var i = new INPUT[1];
+            i[0].type = 0;   // INPUT_MOUSE
+            i[0].u.mi.dx = (int)Math.Round((x - v.Left) * 65535.0 / Math.Max(1, v.Width - 1));
+            i[0].u.mi.dy = (int)Math.Round((y - v.Top) * 65535.0 / Math.Max(1, v.Height - 1));
+            i[0].u.mi.dwFlags = 0x0001 | 0x8000 | 0x4000;   // MOVE | ABSOLUTE | VIRTUALDESK
+            if (SendInput(1, i, Marshal.SizeOf(typeof(INPUT))) != 1) SetCursorPos(x, y);
+        }
+
         // ---------- Injection de pointeurs (tactile natif et stylet, Windows 10 1809+) ----------
         [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }

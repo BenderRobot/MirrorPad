@@ -14,6 +14,10 @@ public static class TT {
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr CreateSyntheticPointerDevice(int type, uint max, int mode);
   [DllImport("user32.dll", SetLastError=true)] static extern bool InjectSyntheticPointerInput(IntPtr dev, PTI[] info, uint n);
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  // un appui tactile / stylet réellement pris en compte déplace le curseur à l'endroit touché
+  static string Cursor(int x, int y) { Thread.Sleep(150); POINT c; GetCursorPos(out c);
+    return (Math.Abs(c.x - x) <= 3 && Math.Abs(c.y - y) <= 3) ? " - PRIS EN COMPTE par Windows" : " - IGNORÉ par Windows (curseur en " + c.x + "," + c.y + ")"; }
   [DllImport("user32.dll", SetLastError=true)] static extern bool InitializeTouchInjection(uint max, uint mode);
   [DllImport("user32.dll", SetLastError=true)] static extern bool InjectTouchInput(uint n, TI[] info);
   // ancienne API tactile (Windows 8+) : pour comparer
@@ -28,7 +32,7 @@ public static class TT {
       if (!InjectTouchInput(1, a)) { fails++; err = Marshal.GetLastWin32Error(); }
       Thread.Sleep(12);
     }
-    return fails == 0 ? "injecté sans erreur" : fails + " trames refusées (erreur " + err + ")";
+    return (fails == 0 ? "injecté sans erreur" : fails + " trames refusées (erreur " + err + ")") + Cursor(x2, y2);
   }
   const int INRANGE=2, INCONTACT=4, FIRSTBUTTON=0x10, PRIMARY=0x2000, CONF=0x4000, DOWN=0x10000, UPDATE=0x20000, UP=0x40000;
   public static string Line(bool pen, int x1, int y1, int x2, int y2) {
@@ -45,7 +49,7 @@ public static class TT {
       if (!InjectSyntheticPointerInput(dev, a, 1)) { fails++; err = Marshal.GetLastWin32Error(); }
       Thread.Sleep(12);
     }
-    return fails == 0 ? "injecté sans erreur" : fails + " trames refusées (erreur " + err + ")";
+    return (fails == 0 ? "injecté sans erreur" : fails + " trames refusées (erreur " + err + ")") + Cursor(x2, y2);
   }
 }
 "@

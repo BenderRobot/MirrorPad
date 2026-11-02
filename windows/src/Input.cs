@@ -116,12 +116,12 @@ namespace MirrorPad
             {
                 if (emuPrimary == null && t.Item4 == "d" && active.Count == 1)
                 {
-                    emuPrimary = t.Item1; Native.SetCursorPos(t.Item2, t.Item3);
+                    emuPrimary = t.Item1; Native.MoveTo(t.Item2, t.Item3);
                     Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true;
                 }
                 else if (emuPrimary == t.Item1)
                 {
-                    Native.SetCursorPos(t.Item2, t.Item3);
+                    Native.MoveTo(t.Item2, t.Item3);
                     if (t.Item4 == "u" || t.Item4 == "c") { ReleaseLeft(); emuPrimary = null; }
                 }
             }
@@ -139,7 +139,7 @@ namespace MirrorPad
             if (emuPen)
             {
                 // émulation souris du stylet : le trait suit le bouton gauche (sans pression)
-                Native.SetCursorPos(x, y);
+                Native.MoveTo(x, y);
                 if (p[0] == "PD") { Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; }
                 else if (p[0] == "PU") ReleaseLeft();
                 return;
@@ -201,7 +201,7 @@ namespace MirrorPad
                 if (!double.TryParse(p[1], NumberStyles.Float, CultureInfo.InvariantCulture, out nx) ||
                     !double.TryParse(p[2], NumberStyles.Float, CultureInfo.InvariantCulture, out ny)) return;
                 var b = Bounds;
-                Native.SetCursorPos((int)(b.Left + nx * (b.Width - 1)), (int)(b.Top + ny * (b.Height - 1)));
+                Native.MoveTo((int)(b.Left + nx * (b.Width - 1)), (int)(b.Top + ny * (b.Height - 1)));
                 switch (p[0])
                 {
                     case "D": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true; break;
