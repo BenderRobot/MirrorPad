@@ -54,6 +54,7 @@ namespace MirrorPad
         readonly Dashboard dashboard = new Dashboard();
         readonly FileTransfer files = new FileTransfer();
         FileSystemWatcher outboxWatcher;
+        CameraViewer viewer;   // fenêtre « Caméras de l'iPad »
         readonly MicPlayer mic = new MicPlayer();
         ClipboardWatcher clip;
         int ticks;
@@ -158,6 +159,7 @@ namespace MirrorPad
             adminItem = new ToolStripMenuItem("Mode administrateur (saisie dans les fenêtres admin)", null, (s, e) => SetAdminMode(!cfg.AdminMode)) { Checked = cfg.AdminMode };
             m.Items.AddRange(new ToolStripItem[] {
                 statusItem, versionItem, new ToolStripSeparator(), toggleItem,
+                new ToolStripMenuItem("Voir les caméras de l'iPad…", null, (s, e) => ShowCameras()),
                 new ToolStripMenuItem("Envoyer un fichier vers l'iPad…", null, (s, e) => PickFilesToSend()),
                 new ToolStripMenuItem("Repérer les écrans…", null, (s, e) => FindScreens()),
                 new ToolStripMenuItem("Installer les composants manquants…", null, (s, e) => InstallDrivers()),
@@ -276,6 +278,7 @@ namespace MirrorPad
                 input.ResetDiagnostics();
                 sleepRequested = false; lastFg = "";   // la Touch Bar est renvoyée à la nouvelle session
                 ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(2000); FlushOutbox(); });   // fichiers en attente
+                if (viewer != null) ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(1500); var v = viewer; if (v != null) v.Request("START front"); });   // fenêtre caméra encore ouverte
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
                 if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); input.Tapped = focus.Tapped; focus.Start(); }
@@ -303,6 +306,18 @@ namespace MirrorPad
         }
 
         // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
+        // ---------- caméras de l'iPad sur le PC (webcam sans fil) ----------
+        void ShowCameras()
+        {
+            var s = session;
+            if (s == null || s.IsClosed) { Balloon("Connectez d'abord l'iPad (app MirrorPad ouverte).", ToolTipIcon.Warning); return; }
+            if (viewer != null && !viewer.IsDisposed) { viewer.Activate(); return; }
+            viewer = new CameraViewer(ffmpeg) { SendLine = line => { var cs = session; if (cs != null) cs.Send(line); } };
+            viewer.FormClosed += (o, e) => viewer = null;
+            viewer.Show();
+            viewer.Request("START front");
+        }
+
         // ---------- fichiers vers l'iPad ----------
         void PickFilesToSend()
         {
@@ -509,6 +524,13 @@ namespace MirrorPad
                 else sound.Stop();
                 return;
             }
+            if (p[0] == "CAM" && viewer != null)
+            {
+                // caméra demandée par la fenêtre du PC : la webcam OBS ne démarre que si elle est installée (pas d'alerte inutile)
+                if (p.Length >= 2 && p[1] == "START") { if (CameraBridge.ObsCameraInstalled()) ThreadPool.QueueUserWorkItem(_ => camera.Start(ffmpeg)); }
+                else { camera.Stop(); var v = viewer; if (v != null) Post(v.CameraStopped); }
+                return;
+            }
             if (p[0] == "CAM") { if (p.Length >= 2 && p[1] == "START") ThreadPool.QueueUserWorkItem(_ => camera.Start(ffmpeg)); else camera.Stop(); }
             else if (p[0] == "MIC")
             {
@@ -527,7 +549,7 @@ namespace MirrorPad
         {
             switch (type)
             {
-                case Session.Camera: camera.Feed(data); break;
+                case Session.Camera: camera.Feed(data); { var v = viewer; if (v != null) v.Feed(data); } break;
                 case Session.Audio: mic.Play(data); break;
                 case Session.ClipImage: if (cfg.ShareClipboard) Post(() => clip.SetImage(data)); break;
                 case FileTransfer.FrameType:

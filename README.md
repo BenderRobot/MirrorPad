@@ -1,83 +1,132 @@
 # MirrorPad
 
-L'iPad (iOS 12, jailbreaké) comme écran supplémentaire tactile d'un PC Windows.
+**L'iPad devient le « bureau d'à côté » du PC** : second écran tactile, stylet, clavier, Touch Bar contextuelle,
+webcam, micro, haut-parleur, transfert de fichiers et tableau de bord. Windows 10/11 (et Debian X11), iPad sous iOS 12 jailbreaké.
 
 ```
-Windows : écran virtuel (Virtual Display Driver) → ffmpeg ddagrab → H.264/FLV ──Wi-Fi :7270──► iPad (décodage matériel)
-Windows : souris  ◄──────────────────────────── gestes tactiles ──Wi-Fi :7271──── iPad
+Windows : écran virtuel (Virtual Display Driver) → ffmpeg ddagrab → H.264/FLV ─┐
+          son (WASAPI loopback) → PCM ──────────────────────────────────────────┤  TLS 1.2, port 7272
+          Touch Bar, tableau de bord, fichiers ─────────────────────────────────┤  Wi-Fi ou câble USB
+iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─────┘  (usbmuxd)
 ```
 
 | Dossier | Contenu |
 |---|---|
 | `ipad/` | App iOS (`MirrorPad.m`), `build.py` (Theos sur SRVHOME), `deploy.py` (SSH vers l'iPad) |
-| `windows/` | App de la zone de notification en C# (`src/`, compilée en `MirrorPad.exe` par `build.sh`), installeur |
+| `windows/src/` | App de la zone de notification en C# (.NET Framework 4.8), compilée en `MirrorPad.exe` par `build.sh` |
+| `windows/helper/` | `MirrorPadInstall.exe` : outil d'installation des pilotes (embarqué dans l'installateur uniquement) |
+| `windows/installer/` | `MirrorPad.nsi` (installateur NSIS), `release.yml` (copie du workflow), `LISEZMOI.md` |
+| `windows/drivers/vdd/` | Virtual Display Driver 24.10.27 (MIT) + définitions iPad paysage / portrait |
+| `windows/tests/` | `Test-Tactile.ps1` : diagnostic de l'injection tactile Windows |
+| `linux/` | Envoyeur Python pour Debian / X11 |
 | `srvhome/` | Ligne cron de rattrapage si l'iPad était éteint lors d'une release |
 | `.github/workflows/release.yml` | Chaîne de publication |
 
+## Fonctionnalités
+
+| Domaine | Ce que ça fait |
+|---|---|
+| **Écran** | Écran étendu 2048×1536, portrait / paysage selon l'iPad (rideau pendant la bascule), position à droite / gauche / au-dessus, retiré quand l'iPad se verrouille, rebranché à son retour |
+| **Fluidité** | Débit adaptatif (baisse si le Wi-Fi sature, remonte quand il se libère), tampon d'envoi court, encodage Quick Sync / NVENC / x264 faible latence, câble USB |
+| **Saisie** | Modes Souris, Tactile, Stylet (pression), Pavé tactile ; clavier de l'iPad ouvert automatiquement quand on touche une zone de saisie (UI Automation + règles pour les applis muettes comme WhatsApp) |
+| **Touch Bar** | Bande façon MacBook en bas de l'iPad, boutons selon l'appli active (Paint, Photoshop, PowerPoint, VS Code, navigateurs, Word, Excel, Explorateur, Teams, WhatsApp, lecteurs), repliable |
+| **Fenêtres** | 3 doigts vers le haut, bouton Touch Bar ou **Ctrl+Alt+I** : la fenêtre active passe sur l'iPad (agrandie), et revient |
+| **Loupe** | 2 doigts immobiles 0,6 s : zoom ×2,5 autour des doigts, pour viser au stylet ; même geste pour sortir |
+| **Pavé numérique** | Touches pavé numérique vers le PC + calculatrice locale avec historique (un résultat touché est tapé sur le PC) |
+| **Présentateur** | Touch Bar PowerPoint : mode Présentateur (Alt+F5) sur l'iPad, diapo précédente / suivante, laser, stylo, écran noir |
+| **Capteurs** | Webcam (caméra virtuelle OBS), micro (VB-CABLE), son du PC sur les haut-parleurs de l'iPad |
+| **Partage** | Presse-papiers texte et images, photos et fichiers iPad → PC, fichiers PC → iPad (« Envoyer vers > iPad ») |
+| **Tableau de bord** | Horloge, processeur, mémoire, disque, réseau, durée d'allumage, et surveillance de sites / serveurs (HTTP ou ping) |
+| **Sécurité** | TLS 1.2 avec épinglage du certificat, appairage par code à 6 chiffres, verrouillage du PC quand l'iPad s'éloigne (option) |
+
+## Gestes
+
+| Geste | Effet (tous les modes) |
+|---|---|
+| 1 doigt tapé / glissé | clic / glisser (tracé continu en mode Stylet) |
+| appui long | clic droit |
+| 2 doigts glissés | défilement fin, avec élan |
+| pincer | zoom (Ctrl + molette) |
+| 2 doigts immobiles 0,6 s | loupe ×2,5 (même geste pour sortir) |
+| 3 doigts tapés | clavier de l'iPad |
+| 3 doigts vers le haut | fenêtre active ⇄ iPad |
+| 4 doigts tapés | réglages |
+
+Sur ce PC, Windows ignore le tactile et le stylet simulés : MirrorPad le détecte au premier appui et bascule seul
+en **émulation souris** (vrais mouvements `SendInput`, défilement fin, pincer = zoom, appui long = clic droit).
+
+## Installation Windows
+
+**Tout passe par `MirrorPad-Setup.exe`** (release GitHub) : jamais de script à lancer à la main.
+Chaque nouveau composant Windows = une nouvelle section de `windows/installer/MirrorPad.nsi`.
+
+| Composant (case de l'installateur) | Contenu |
+|---|---|
+| MirrorPad | app + ffmpeg, menu Démarrer, démarrage avec Windows, désinstallation dans « Applications installées » |
+| Écran virtuel | Virtual Display Driver + `C:\VirtualDisplayDriver\vdd_settings.xml` (2048×1536 et 1536×2048) |
+| Webcam | OBS Studio via winget (caméra « OBS Virtual Camera » : Teams, Zoom, navigateurs ; pas l'appli Caméra de Windows 10) |
+| Câble USB | service Apple Mobile Device seul, extrait de l'installateur officiel d'Apple (sans iTunes) |
+| Micro | VB-CABLE, téléchargé depuis vb-audio.com pendant l'installation |
+
+Dans l'app : menu de l'icône > « Installer les composants manquants… » télécharge et relance le dernier installateur.
+Réglages : `%APPDATA%\MirrorPad\config.json` · journal : `mirrorpad.log` (même dossier) · fichiers reçus : `Téléchargements\MirrorPad`.
+
+### Surveillance du tableau de bord
+
+Dans `config.json` (MirrorPad fermé) :
+
+```json
+"DashboardChecks": [
+  { "Name": "Zabbix",  "Target": "https://zabbix.exemple.fr" },
+  { "Name": "SRVHOME", "Target": "192.168.1.41" }
+]
+```
+`https://…` = requête web (code et temps de réponse), sinon ping. Vérifié toutes les 15 s, 8 cibles au maximum.
+
 ## Publier une mise à jour
 
-```
-git add -A && git commit -m "ce qui change" && git push
+```powershell
+.\Publier.ps1 "ce qui change"
 ```
 
 À chaque push sur `main` (version `1.0.<n>`) :
 1. **SRVHOME** (runner auto-hébergé) compile l'app iPad et l'installe aussitôt sur l'iPad (l'app est relancée).
-2. Une **release GitHub** est publiée avec `mirrorpad_<version>_iphoneos-arm.deb` et `MirrorPad-Windows.zip`.
-3. **L'app Windows** vérifie les releases toutes les 2 minutes, se met à jour et redémarre seule.
+2. **GitHub (Ubuntu)** compile `MirrorPad.exe` et `MirrorPadInstall.exe` avec Mono, télécharge ffmpeg (BtbN, GPL),
+   construit `MirrorPad-Setup.exe` avec NSIS et signe les exe si Azure Trusted Signing est configuré (`windows/sign.sh`).
+3. Une **release GitHub** publie le `.deb` iPad, `MirrorPad-Windows.zip` (mises à jour) et `MirrorPad-Setup.exe`.
+4. **L'app Windows** vérifie les releases toutes les 2 minutes, se met à jour et redémarre seule.
 
-## Sécurité
+Signature (recommandée contre les alertes Defender / SmartScreen) : variables `AZURE_SIGNING_ENDPOINT`,
+`AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` et secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
 
-Un seul port, **7272**, chiffré en **TLS 1.2**. Le PC se connecte à l'iPad mais joue le rôle de serveur TLS :
-- l'iPad n'accepte que les PC dont il a mémorisé l'empreinte du certificat (épinglage) ;
-- le PC n'accepte que les iPad appairés (jeton secret de 256 bits remis à l'appairage) ;
-- appairage : le même code à 6 chiffres (SHA-256 du certificat du PC + nonce de l'iPad) s'affiche sur les deux appareils, à confirmer sur le PC.
+## Protocole
 
-Trames : `[type 1 octet][longueur 3 octets][données]` (1 = ligne de contrôle, 2 = vidéo FLV).
+Un seul port, **7272**, en **TLS 1.2**. Le PC se connecte à l'iPad (Wi-Fi, ou tunnel USB via usbmuxd sur `127.0.0.1:27015`)
+mais joue le rôle de serveur TLS : l'iPad épingle le certificat du PC, le PC n'accepte que les iPad appairés (jeton de 256 bits).
+Appairage : le même code à 6 chiffres (SHA-256 du certificat + nonce de l'iPad) s'affiche des deux côtés.
+
+Trames : `[type 1 octet][longueur 3 octets][données]`
+
+| Type | Sens | Contenu |
+|---|---|---|
+| 1 | ↔ | ligne de contrôle (texte) |
+| 2 | PC → iPad | vidéo FLV (H.264) |
+| 3 | iPad → PC | webcam H.264 Annex-B |
+| 4 | ↔ | image du presse-papiers (PNG) |
+| 5 | iPad → PC | photo : `[longueur nom 2 o][nom][données]` |
+| 6 | iPad → PC | micro PCM 16 bits mono 48 kHz |
+| 7 | PC → iPad | son du PC, PCM 16 bits stéréo |
+| 8 | ↔ | fichier en morceaux : `[id 4 o][drapeaux 1 o : 1 début, 2 fin][début : longueur nom 2 o + nom][données]` |
+
 Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR <idIPad> <nom> <nonce>` → `OK` / `PAIRED <jeton>` / `ERR …`.
 
-## Gestes
+Lignes iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `F id:x:y:d|m|u|c …`, `PD/PM x y pression [e]`, `PU`, `RM dx dy`, `CL`, `CR`,
+`DD/DU`, `KS combo`, `T texte`, `K BACK|ENTER`, `O P|L`, `P n`, `S fps mbps`, `SLEEP`, `CAM START w h fps|STOP`,
+`MIC START rate ch|STOP`, `SND START|STOP`, `DB START|STOP`, `WIN SWAP`, `CB texte`.
 
-| Geste | Effet |
-|---|---|
-| 1 doigt tapé / glissé | clic / glisser |
-| appui long | clic droit |
-| 2 doigts tapés / glissés | clic droit / molette (avec élan) |
-| pincer | zoom (Ctrl + molette) |
-| 3 doigts tapés | clavier de l'iPad (texte envoyé au PC) |
-| 4 doigts tapés | réglages (qualité, gestes, indicateur de performance, derniers PC) |
-
-Tourner l'iPad bascule l'écran virtuel en portrait (1536×2048) ou paysage.
-
-## Modes de saisie (bouton flottant en haut à gauche ou tap à 4 doigts → Réglages)
-
-| Mode | Fonctionnement | Lignes envoyées |
-|---|---|---|
-| Souris | gestes MirrorPad (ci-dessus) | `D/M/U/R`, `W`, `Z` |
-| Tactile | écran tactile Windows natif, jusqu'à 10 doigts (Windows 10 1809+) | `F id:x:y:d|m|u|c …` |
-| Stylet | tablette graphique Windows Ink, pression selon la surface de contact, gomme | `PD/PM x y pression [e]`, `PU` |
-| Pavé tactile | trackpad relatif, gestes 3 doigts (vue des tâches, bureau, changer d'appli) | `RM dx dy`, `CL`, `CR`, `DD/DU` |
-| Raccourcis | grille de boutons, liste `Shortcuts` du `config.json` du PC | `KS ctrl+shift+s` |
-
-## Lignes de contrôle
-
-iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `T texte%encodé`, `K BACK`, `O P|L`, `P n`, `S fps mbps`
-PC → iPad : `P n` (latence), `N nom-du-pc`, `C fps mbps encodeur`, `V NEW` / `V END` (début / fin d'un flux vidéo)
-
-## Capteurs de l'iPad (Réglages → Capteurs)
-
-| Fonction | Côté iPad | Côté PC | Trame |
-|---|---|---|---|
-| Webcam | caméra avant/arrière, H.264 1280×720 (VideoToolbox) | webcam « MirrorPad (iPad) » via [akvirtualcamera](https://github.com/webcamoid/akvirtualcamera) (créée au 1er usage, droits admin une fois) | 3 |
-| Micro | PCM 16 bits mono 48 kHz | joué dans « CABLE Input » de [VB-CABLE](https://vb-audio.com/Cable/) → choisir « CABLE Output » comme micro | 6 |
-| Presse-papiers | texte et images, dans les deux sens | idem (désactivable des deux côtés) | ligne `CB`, trame 4 |
-| Photos | sélection dans la photothèque | `Téléchargements\MirrorPad` | 5 : `[longueur nom 2 o][nom][données]` |
-
-## Installation Windows
-
-`powershell -ExecutionPolicy Bypass -File windows\Installer-MirrorPad.ps1` (ajouter `-Token github_pat_…` si le dépôt est privé).
-Réglages : `%APPDATA%\MirrorPad\config.json` · journaux : `ffmpeg.log`, `tactile.log` dans le même dossier.
-
-Mode portrait : lancer une fois `windows\Ajouter-Portrait.ps1` **en administrateur** (ajoute 1536×2048 au pilote d'écran virtuel).
+Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q saturation% débit`, `SC …` (raccourcis),
+`TB titre libellé|touches …` (Touch Bar), `KB 1 x y w h` / `KB 0` (clavier auto), `SND FMT rate 2`,
+`DB cpu ramUtilisée ramTotale envoiKo réceptionKo disque% minutes nomPC`, `DBX nom|ok|détail …`, `CB texte`, `MSG texte`, `P n`.
 
 ## Linux (Debian, session X11)
 
@@ -87,4 +136,12 @@ python3 linux/mirrorpad-sender.py            # iPad détecté automatiquement
 cp linux/mirrorpad.desktop ~/.config/autostart/   # lancement à l'ouverture de session
 ```
 Crée un moniteur virtuel 2048×1536 à droite des écrans (`xrandr --setmonitor`), encodage VA-API si disponible, sinon x264.
-Réglages : `~/.config/mirrorpad/config.json`. Wayland non pris en charge.
+Réglages : `~/.config/mirrorpad/config.json`. Wayland non pris en charge. Les fonctions récentes (Touch Bar, son, fichiers,
+tableau de bord, USB) sont pour l'instant propres à Windows.
+
+## Limites connues
+
+- Exe non signés : Defender peut les bloquer (faux positif) tant qu'Azure Trusted Signing n'est pas activé.
+- Webcam invisible dans l'appli Caméra de Windows 10 (DirectShow seulement) ; visible partout sous Windows 11 avec une future caméra Media Foundation.
+- Tableau de bord sans Outlook / Teams : l'app tourne en administrateur et Windows lui interdit de lire ces applis.
+- App iPad pour iPad jailbreaké (iOS 12) ; une version App Store demandera Xcode 26, un Mac et un iPad récent.

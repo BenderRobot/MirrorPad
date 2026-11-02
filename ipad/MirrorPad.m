@@ -1877,6 +1877,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  CGFloat _zoom;CGPoint _zoomAt;UILabel *_zoomBadge;   // loupe (2 doigts maintenus)
  NSMutableDictionary<NSNumber*,NSFileHandle*> *_rxFiles;NSMutableDictionary<NSNumber*,NSString*> *_rxPaths;   // fichiers reçus du PC
  MPDashboardView *_dash;      // tableau de bord
+ BOOL _remoteCam;             // caméra ouverte à la demande du PC (fenêtre « Caméras de l'iPad »)
  BOOL _soundOn;               // son demandé au PC pour cette connexion
  CGRect _fieldNorm;           // zone de saisie (coordonnées 0..1 de l'écran du PC)
  CGFloat _kbHeight;           // hauteur du clavier affiché
@@ -2024,6 +2025,8 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   }
  } else if([k isEqualToString:@"MSG"]&&p.count>=2){
   [self showNotice:@"MirrorPad" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
+ } else if([k isEqualToString:@"CAMREQ"]&&p.count>=2){
+  [self remoteCamera:p];
  } else if([k isEqualToString:@"DB"]||[k isEqualToString:@"DBX"]){
   [_dash update:p];
  } else if([k isEqualToString:@"TB"]&&p.count>=2){
@@ -2296,6 +2299,31 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [_camView showIn:self.view];
  [self updateDock];
 }
+// Le PC veut voir une caméra de l'iPad (webcam sans fil) : « CAMREQ START front|back », « CAMREQ SWITCH », « CAMREQ STOP »
+- (void)remoteCamera:(NSArray<NSString*>*)p {
+ NSString *op=p[1];
+ if([op isEqualToString:@"START"]){
+  BOOL front=!(p.count>=3&&[p[2] isEqualToString:@"back"]);
+  if(!_camera)_camera=[MPCamera new];
+  BOOL wasRunning=_camera.session!=nil;
+  if(!wasRunning||_camera.front!=front){
+   __weak MPSecureServer *in=_input;
+   _camera.onFrame=^(NSData *f){[in sendBinary:3 data:f];};
+   if(![_camera start:front]){[_input send:[NSString stringWithFormat:@"MSG %@\n",MPEsc(@"Caméra de l'iPad indisponible (autorisation dans Réglages > Confidentialité > Appareil photo).")]];return;}
+   if(_camView)[_camView attach:_camera.session];
+  }
+  if(!wasRunning)[_input send:@"CAM START 1280 720 30"];
+  _remoteCam=YES;
+  UIApplication.sharedApplication.idleTimerDisabled=YES;   // l'iPad ne se met pas en veille tant que le PC regarde
+  [self showNotice:@"Caméra" text:[NSString stringWithFormat:@"Le PC affiche la caméra %@ de l'iPad.",front?@"avant":@"arrière"] code:nil ok:YES];
+  [self updateDock];
+ } else if([op isEqualToString:@"SWITCH"]&&_camera.session){
+  [_camera start:!_camera.front];if(_camView)[_camView attach:_camera.session];
+ } else if([op isEqualToString:@"STOP"]&&_remoteCam){
+  _remoteCam=NO;UIApplication.sharedApplication.idleTimerDisabled=NO;
+  if(!_camView.superview)[self stopCamera];   // l'utilisateur de l'iPad ne s'en sert pas lui-même : on coupe
+ }
+}
 - (void)stopCamera {
  if(!_camera.session)return;
  [_camera stop];
@@ -2319,6 +2347,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 }
 // arrêt de la caméra et du micro (session fermée, iPad verrouillé)
 - (void)sensorsOff:(BOOL)notify {
+ _remoteCam=NO;UIApplication.sharedApplication.idleTimerDisabled=NO;
  if(_camera.session){[_camera stop];if(notify)[_input send:@"CAM STOP"];}
  if(_mic.running){[_mic stop];if(notify)[_input send:@"MIC STOP"];}
  [_camView hide];_camView=nil;
