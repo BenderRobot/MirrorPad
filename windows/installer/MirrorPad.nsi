@@ -1,7 +1,7 @@
 ﻿; MirrorPad-Setup.exe : installation complète de MirrorPad pour Windows (NSIS, compilé par GitHub Actions)
 ;   makensis -DVERSION=1.0.42 MirrorPad.nsi
 ; Fichiers attendus à côté de ce script (préparés par le workflow) :
-;   ffmpeg.exe, ffmpeg-LICENCE.txt, akvcam.nsh (+ akv\*.exe si la webcam est disponible)
+;   ffmpeg.exe, ffmpeg-LICENCE.txt, MirrorPadInstall.exe
 Unicode true
 !ifndef VERSION
   !define VERSION "1.0.0"
@@ -11,7 +11,6 @@ Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
-!include "akvcam.nsh"
 
 Name "${APP}"
 Caption "Installation de ${APP} ${VERSION}"
@@ -114,20 +113,19 @@ Section "Écran virtuel" SecDisplay
   SetOutPath "$INSTDIR"
 SectionEnd
 
-!ifdef AKVCAM_FILE
 Section "Webcam (l'iPad comme caméra)" SecCam
-  ${If} ${FileExists} "$PROGRAMFILES64\AkVirtualCamera\*.*"
-    DetailPrint "Webcam virtuelle déjà installée."
+  ; caméra virtuelle d'OBS Studio : logiciel signé, installé depuis le catalogue officiel winget
+  ${If} ${FileExists} "$PROGRAMFILES64\obs-studio\data\obs-plugins\win-dshow\obs-virtualcam-module64.dll"
+    DetailPrint "Caméra virtuelle OBS déjà installée."
   ${Else}
-    DetailPrint "Installation de la webcam virtuelle (akvirtualcamera)..."
-    File "/oname=$PLUGINSDIR\akvcam.exe" "${AKVCAM_FILE}"
-    ExecWait '"$PLUGINSDIR\akvcam.exe" ${AKVCAM_ARGS}' $0
-    ${If} $0 != 0
-      StrCpy $Warnings "$Warnings$\r$\n- webcam (code $0)"
+    DetailPrint "Installation d'OBS Studio (caméra virtuelle) via winget, quelques minutes..."
+    nsExec::ExecToLog 'winget install --id OBSProject.OBSStudio -e --silent --accept-package-agreements --accept-source-agreements'
+    Pop $0
+    ${IfNot} ${FileExists} "$PROGRAMFILES64\obs-studio\data\obs-plugins\win-dshow\obs-virtualcam-module64.dll"
+      StrCpy $Warnings "$Warnings$\r$\n- webcam : installez OBS Studio depuis obsproject.com (code $0)"
     ${EndIf}
   ${EndIf}
 SectionEnd
-!endif
 
 Section "Micro (l'iPad comme micro)" SecMic
   DetailPrint "Téléchargement et installation de VB-CABLE (vb-audio.com)..."
@@ -148,9 +146,7 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "L'application ${APP} (icône près de l'horloge), lancée au démarrage de Windows, avec ses mises à jour automatiques."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDisplay} "Pilote d'écran virtuel (Virtual Display Driver) : l'écran que l'iPad affiche, en paysage et en portrait."
-!ifdef AKVCAM_FILE
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecCam} "Webcam virtuelle « MirrorPad Camera » (akvirtualcamera) : la caméra de l'iPad dans Teams, Zoom, Meet..."
-!endif
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecCam} "Caméra virtuelle d'OBS Studio (installé via winget) : la caméra de l'iPad devient « OBS Virtual Camera » dans Teams, Zoom, Meet..."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMic} "Câble audio VB-CABLE, téléchargé depuis vb-audio.com : le micro de l'iPad devient « CABLE Output » dans vos applis."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 

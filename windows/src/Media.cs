@@ -1,4 +1,4 @@
-// Capteurs de l'iPad côté PC : webcam virtuelle (akvirtualcamera), micro (VB-CABLE), presse-papiers, photos reçues.
+// Capteurs de l'iPad côté PC : webcam virtuelle (caméra d'OBS Studio), micro (VB-CABLE), presse-papiers, photos reçues.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,80 +14,107 @@ using System.Windows.Forms;
 
 namespace MirrorPad
 {
-    // ---------- Webcam : H.264 de l'iPad -> ffmpeg (décodage) -> AkVCamManager stream (webcam virtuelle) ----------
+    // ---------- Webcam : H.264 de l'iPad -> ffmpeg (décodage NV12) -> « OBS Virtual Camera » ----------
+    // La caméra virtuelle d'OBS Studio (logiciel signé, très répandu) lit ses images dans une mémoire partagée
+    // nommée « OBSVirtualCamVideo » : on y écrit nous-mêmes les images de l'iPad, sans lancer OBS.
+    // Format (plugins/win-dshow/shared-memory-queue.c d'OBS) : en-tête puis 3 tampons [horodatage 32 o][image NV12].
     public class CameraBridge
     {
-        public const string DeviceId = "MirrorPadCamera";
-        public const int W = 1280, H = 720, Fps = 30;
-        Process decoder, sink;
+        public const int W = 1920, H = 1080, Fps = 30;   // format par défaut annoncé par la caméra OBS
+        const int FrameSize = W * H * 3 / 2, FrameHeader = 32, HeaderSize = 80;
+        const uint StateStarting = 1, StateReady = 2, StateStopping = 3;
+        Process decoder;
         Thread pump;
-        public Action<string> Notify;          // message pour l'utilisateur (bulle + iPad)
-        public Func<string, int> RunElevated;  // exécute du PowerShell en administrateur (code de sortie)
+        IntPtr mapping = IntPtr.Zero, view = IntPtr.Zero;
+        readonly int[] offsets = new int[3];
+        public Action<string> Notify;
+        public Func<string, int> RunElevated;   // conservé pour compatibilité (plus utilisé)
 
-        public static string FindManager()
+        public static bool ObsCameraInstalled()
         {
-            foreach (var root in new[] { Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetEnvironmentVariable("ProgramFiles(x86)") })
+            foreach (var root in new[] { Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetEnvironmentVariable("ProgramW6432") })
             {
                 if (string.IsNullOrEmpty(root)) continue;
-                foreach (var d in new[] { "AkVirtualCamera", "akvirtualcamera" })
-                {
-                    var dir = Path.Combine(root, d);
-                    if (!Directory.Exists(dir)) continue;
-                    var all = Directory.GetFiles(dir, "AkVCamManager.exe", SearchOption.AllDirectories);
-                    var x64 = all.FirstOrDefault(f => f.IndexOf("x64", StringComparison.OrdinalIgnoreCase) >= 0);
-                    if (x64 != null) return x64;
-                    if (all.Length > 0) return all[0];
-                }
+                if (File.Exists(Path.Combine(root, @"obs-studio\data\obs-plugins\win-dshow\obs-virtualcam-module64.dll"))) return true;
             }
-            return null;
+            using (var k = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey(@"CLSID\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}"))
+                return k != null;
         }
 
-        static string Run(string exe, string args)
+        static int Align(int v) { return (v + 31) & ~31; }
+
+        bool OpenQueue()
         {
-            var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
-            using (var p = Process.Start(psi)) { var o = p.StandardOutput.ReadToEnd(); p.WaitForExit(15000); return o; }
+            int size = Align(HeaderSize);
+            for (int i = 0; i < 3; i++) { offsets[i] = size; size = Align(size + FrameSize + FrameHeader); }
+            // accessible aux applis non administrateur (Teams, Zoom…) même si MirrorPad tourne en administrateur
+            IntPtr sd; uint sdLen;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;WD)S:(ML;;NW;;;LW)", 1, out sd, out sdLen)) sd = IntPtr.Zero;
+            var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), lpSecurityDescriptor = sd };
+            mapping = CreateFileMapping(new IntPtr(-1), ref sa, 0x04 /* PAGE_READWRITE */, 0, (uint)size, "OBSVirtualCamVideo");
+            int err = Marshal.GetLastWin32Error();
+            if (sd != IntPtr.Zero) LocalFree(sd);
+            if (mapping == IntPtr.Zero) return false;
+            if (err == 183 /* déjà existante : OBS diffuse déjà sa propre caméra */) { CloseHandle(mapping); mapping = IntPtr.Zero; return false; }
+            view = MapViewOfFile(mapping, 0xF001F, 0, 0, UIntPtr.Zero);
+            if (view == IntPtr.Zero) { CloseHandle(mapping); mapping = IntPtr.Zero; return false; }
+            // en-tête : write_idx, read_idx, state, offsets[3], type, cx, cy, (pad), interval (u64), reserved[8]
+            for (int i = 0; i < HeaderSize; i += 4) Marshal.WriteInt32(view, i, 0);
+            Marshal.WriteInt32(view, 8, (int)StateStarting);
+            for (int i = 0; i < 3; i++) Marshal.WriteInt32(view, 12 + i * 4, offsets[i]);
+            Marshal.WriteInt32(view, 24, 0);   // type vidéo
+            Marshal.WriteInt32(view, 28, W);
+            Marshal.WriteInt32(view, 32, H);
+            Marshal.WriteInt64(view, 40, 10000000L / Fps);   // intervalle en unités de 100 ns
+            return true;
         }
 
-        // Crée une fois la webcam « MirrorPad (iPad) » (droits administrateur nécessaires)
-        bool EnsureDevice(string mgr)
+        void WriteFrame(byte[] nv12)
         {
-            var list = Run(mgr, "-p devices");
-            if (list.Split('\n').Any(l => l.Trim() == DeviceId)) return true;
-            Log.Write("création de la webcam virtuelle MirrorPad");
-            var code = "& '" + mgr + "' add-device -i " + DeviceId + " 'MirrorPad (iPad)'\n" +
-                       "& '" + mgr + "' add-format " + DeviceId + " RGB24 " + W + " " + H + " " + Fps + "\n" +
-                       "& '" + mgr + "' update\nexit 0";
-            int rc = RunElevated != null ? RunElevated(code) : -1;
-            list = Run(mgr, "-p devices");
-            return list.Split('\n').Any(l => l.Trim() == DeviceId);
+            int inc = Marshal.ReadInt32(view, 0) + 1;
+            int idx = inc % 3;
+            Marshal.Copy(nv12, 0, view + offsets[idx] + FrameHeader, FrameSize);
+            Marshal.WriteInt64(view + offsets[idx], Stopwatch.GetTimestamp() * (1000000000L / Stopwatch.Frequency));
+            Marshal.WriteInt32(view, 0, inc);   // write_idx
+            Marshal.WriteInt32(view, 4, inc);   // read_idx
+            Marshal.WriteInt32(view, 8, (int)StateReady);
+        }
+
+        void CloseQueue()
+        {
+            if (view != IntPtr.Zero) { try { Marshal.WriteInt32(view, 8, (int)StateStopping); } catch { } UnmapViewOfFile(view); view = IntPtr.Zero; }
+            if (mapping != IntPtr.Zero) { CloseHandle(mapping); mapping = IntPtr.Zero; }
         }
 
         public void Start(string ffmpeg)
         {
             Stop();
-            var mgr = FindManager();
-            if (mgr == null) { Notify("Webcam : pilote manquant. Relancez MirrorPad-Setup.exe avec la case « Webcam » cochée."); return; }
+            if (!ObsCameraInstalled()) { Notify("Webcam : installez OBS Studio (relancez MirrorPad-Setup.exe avec la case « Webcam » cochée)."); return; }
             try
             {
-                if (!EnsureDevice(mgr)) { Notify("Webcam : impossible de créer la webcam virtuelle (autorisation refusée ?)."); return; }
-                sink = Process.Start(new ProcessStartInfo(mgr, "stream -f " + Fps + " " + DeviceId + " RGB24 " + W + " " + H) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true });
+                if (!OpenQueue()) { Notify("Webcam : la caméra OBS est déjà utilisée (fermez la caméra virtuelle d'OBS)."); return; }
                 decoder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags nobuffer -flags low_delay -f h264 -i pipe:0 " +
-                    "-vf scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2,format=rgb24 -f rawvideo pipe:1")
+                    "-vf scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2,format=nv12 -f rawvideo pipe:1")
                     { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true });
-                var d = decoder; var s = sink;
+                var d = decoder;
                 pump = new Thread(() =>
                 {
-                    var buf = new byte[W * H * 3];
+                    var buf = new byte[FrameSize];
                     try
                     {
-                        var src = d.StandardOutput.BaseStream; var dst = s.StandardInput.BaseStream;
-                        int n;
-                        while ((n = src.Read(buf, 0, buf.Length)) > 0) { dst.Write(buf, 0, n); dst.Flush(); }
+                        var src = d.StandardOutput.BaseStream;
+                        while (true)
+                        {
+                            int got = 0;
+                            while (got < FrameSize) { int n = src.Read(buf, got, FrameSize - got); if (n <= 0) return; got += n; }
+                            if (view == IntPtr.Zero) return;
+                            WriteFrame(buf);
+                        }
                     }
                     catch { }
                 }) { IsBackground = true, Name = "webcam" };
                 pump.Start();
-                Log.Write("webcam MirrorPad active");
+                Log.Write("webcam MirrorPad active (caméra « OBS Virtual Camera »)");
             }
             catch (Exception e) { Notify("Webcam : " + e.Message); Stop(); }
         }
@@ -101,15 +128,27 @@ namespace MirrorPad
 
         public void Stop()
         {
-            foreach (var p in new[] { decoder, sink })
+            var d = decoder; decoder = null;
+            if (d != null)
             {
-                if (p == null) continue;
-                try { p.StandardInput.Close(); } catch { }
-                try { if (!p.WaitForExit(500)) p.Kill(); } catch { }
+                try { d.StandardInput.Close(); } catch { }
+                try { if (!d.WaitForExit(500)) d.Kill(); } catch { }
+                Log.Write("webcam MirrorPad arrêtée");
             }
-            if (decoder != null) Log.Write("webcam MirrorPad arrêtée");
-            decoder = null; sink = null;
+            var t = pump; pump = null;
+            if (t != null) try { t.Join(1000); } catch { }
+            CloseQueue();
         }
+
+        [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint rev, out IntPtr sd, out uint len);
+        [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateFileMapping(IntPtr file, ref SECURITY_ATTRIBUTES sa, uint protect, uint sizeHigh, uint sizeLow, string name);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr MapViewOfFile(IntPtr map, uint access, uint offHigh, uint offLow, UIntPtr bytes);
+        [DllImport("kernel32.dll")] static extern bool UnmapViewOfFile(IntPtr view);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
     }
 
     // ---------- Micro : PCM 16 bits de l'iPad joué dans « CABLE Input » (VB-CABLE) ----------
