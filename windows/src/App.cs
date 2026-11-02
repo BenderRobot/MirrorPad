@@ -242,7 +242,7 @@ namespace MirrorPad
                     s.Send("C " + cfg.Fps + " " + cfg.Mbps + " " + Uri.EscapeDataString(Streamer.EncoderNames[streamer.ActiveEncoder]));
                     var t0 = DateTime.Now;
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
-                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed) Thread.Sleep(3000);   // échec immédiat : on patiente
+                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed) { WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
                 streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
                 s.Close();
