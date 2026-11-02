@@ -32,6 +32,7 @@ namespace MirrorPadInstall
                 {
                     case "--setup-display": return SetupDisplay(args.Length > 1 ? args[1] : null);
                     case "--setup-vbcable": return SetupVbCable();
+                    case "--setup-usb": return SetupUsb();
                 }
                 Console.WriteLine("commande inconnue : " + args[0]);
                 return 2;
@@ -144,6 +145,40 @@ namespace MirrorPadInstall
                     throw new Exception("DIF_REGISTERDEVICE (" + Marshal.GetLastWin32Error() + ")");
             }
             finally { SetupDiDestroyDeviceInfoList(set); }
+        }
+
+        // ---------- câble USB : service « Apple Mobile Device » ----------
+        // On n'installe pas iTunes : on télécharge l'installateur officiel d'Apple, on en extrait
+        // uniquement « AppleMobileDeviceSupport64.msi » (le service USB) et on l'installe en silence.
+        static bool UsbServicePresent() { return Exec("sc.exe", "query \"Apple Mobile Device Service\"") == 0; }
+
+        static int SetupUsb()
+        {
+            if (UsbServicePresent()) { Console.WriteLine("service Apple déjà installé"); return 0; }
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            var tmp = Path.Combine(Path.GetTempPath(), "mirrorpad-usb");
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+            Directory.CreateDirectory(tmp);
+            var setup = Path.Combine(tmp, "iTunes64Setup.exe");
+            Console.WriteLine("téléchargement de l'installateur Apple (environ 200 Mo)...");
+            using (var wc = new WebClient())
+            {
+                wc.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+                wc.DownloadFile("https://www.apple.com/itunes/download/win64", setup);
+            }
+            var sig = new X509Certificate2(X509Certificate.CreateFromSignedFile(setup));
+            if (sig.Subject.IndexOf("Apple Inc", StringComparison.OrdinalIgnoreCase) < 0) throw new Exception("installateur non signé par Apple : " + sig.Subject);
+            Console.WriteLine("extraction du service USB...");
+            using (var p = Process.Start(new ProcessStartInfo(setup, "/extract") { WorkingDirectory = tmp, UseShellExecute = false, CreateNoWindow = true }))
+                if (!p.WaitForExit(300000)) { try { p.Kill(); } catch { } }
+            var msi = Directory.GetFiles(tmp, "AppleMobileDeviceSupport64.msi", SearchOption.AllDirectories).FirstOrDefault();
+            if (msi == null) throw new Exception("AppleMobileDeviceSupport64.msi introuvable dans l'installateur Apple");
+            Console.WriteLine("installation de " + Path.GetFileName(msi) + "...");
+            var code = Exec("msiexec.exe", "/i \"" + msi + "\" /qn /norestart", 300000);
+            Console.WriteLine("msiexec : code " + code);
+            try { Directory.Delete(tmp, true); } catch { }
+            if (!UsbServicePresent()) throw new Exception("le service Apple n'a pas été installé (msiexec " + code + ")");
+            return code == 3010 ? 3010 : 0;
         }
 
         // ---------- micro : VB-CABLE ----------

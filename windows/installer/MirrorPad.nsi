@@ -128,27 +128,15 @@ Section "Webcam (l'iPad comme caméra)" SecCam
 SectionEnd
 
 Section "Câble USB (service Apple)" SecUsb
-  ; service « Apple Mobile Device » : connexion par le câble (latence minimale, iPad en charge)
-  nsExec::Exec 'sc.exe query "Apple Mobile Device Service"'
+  ; service « Apple Mobile Device » seul (extrait de l'installateur officiel d'Apple, sans iTunes)
+  DetailPrint "Service Apple pour le câble USB (téléchargement d'environ 200 Mo si absent)..."
+  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-usb'
   Pop $0
-  ${If} $0 == 0
-    DetailPrint "Service Apple déjà installé."
-  ${Else}
-    DetailPrint "Installation d'Apple Devices (Microsoft Store) pour le câble USB..."
-    nsExec::ExecToLog 'winget install --id 9NP83LWLPZ9K --source msstore --silent --accept-package-agreements --accept-source-agreements'
-    Pop $0
-    nsExec::Exec 'sc.exe query "Apple Mobile Device Service"'
-    Pop $1
-    ${If} $1 != 0
-      DetailPrint "Apple Devices indisponible : installation d'iTunes (même service)..."
-      nsExec::ExecToLog 'winget install --id Apple.iTunes -e --silent --accept-package-agreements --accept-source-agreements'
-      Pop $0
-      nsExec::Exec 'sc.exe query "Apple Mobile Device Service"'
-      Pop $1
-      ${If} $1 != 0
-        StrCpy $Warnings "$Warnings$\r$\n- câble USB : installez « Apple Devices » depuis le Microsoft Store"
-      ${EndIf}
-    ${EndIf}
+  ${If} $0 == 3010
+    SetRebootFlag true
+  ${ElseIf} $0 != 0
+    StrCpy $Warnings "$Warnings$\r$\n- câble USB (code $0) : détails dans la fenêtre « Plus d'infos » de l'installation"
   ${EndIf}
 SectionEnd
 
@@ -172,7 +160,7 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "L'application ${APP} (icône près de l'horloge), lancée au démarrage de Windows, avec ses mises à jour automatiques."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDisplay} "Pilote d'écran virtuel (Virtual Display Driver) : l'écran que l'iPad affiche, en paysage et en portrait."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCam} "Caméra virtuelle d'OBS Studio (installé via winget) : la caméra de l'iPad devient « OBS Virtual Camera » dans Teams, Zoom, Meet..."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecUsb} "Service Apple Mobile Device (application Apple Devices ou iTunes) : connexion par le câble, plus rapide que le Wi-Fi, iPad en charge."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecUsb} "Service Apple Mobile Device (sans iTunes, depuis l'installateur officiel d'Apple) : connexion par le câble, plus rapide que le Wi-Fi, iPad en charge."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMic} "Câble audio VB-CABLE, téléchargé depuis vb-audio.com : le micro de l'iPad devient « CABLE Output » dans vos applis."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
