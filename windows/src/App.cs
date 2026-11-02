@@ -313,7 +313,8 @@ namespace MirrorPad
             if (s == null || s.IsClosed) { Balloon("Connectez d'abord l'iPad (app MirrorPad ouverte).", ToolTipIcon.Warning); return; }
             if (viewer != null && !viewer.IsDisposed) { viewer.Activate(); return; }
             viewer = new CameraViewer(ffmpeg) { SendLine = line => { var cs = session; if (cs != null) cs.Send(line); } };
-            viewer.FormClosed += (o, e) => viewer = null;
+            viewer.FormClosed += (o, e) => { viewer = null; streamer.SetCap(0); };
+            streamer.SetCap(6);   // le Wi-Fi doit aussi porter la caméra dans l'autre sens
             viewer.Show();
             viewer.Request("START front");
         }

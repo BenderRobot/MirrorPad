@@ -26,7 +26,10 @@ namespace MirrorPad
         public volatile bool AdaptRestart;   // ffmpeg relancé par l'adaptation (pas un échec)
         public Action<int, int> Stats;       // chaque seconde : saturation réseau (%), débit utilisé (Mb/s)
         int congested, relaxed; DateTime lastDrop = DateTime.MinValue;
-        int Mbps { get { return LiveMbps > 0 ? Math.Min(LiveMbps, cfg.Mbps) : cfg.Mbps; } }
+        int Mbps { get { int m = LiveMbps > 0 ? Math.Min(LiveMbps, cfg.Mbps) : cfg.Mbps; return CapMbps > 0 ? Math.Min(m, CapMbps) : m; } }
+        // plafond temporaire (ex. caméra de l'iPad affichée sur le PC : on laisse de la place sur le Wi-Fi)
+        public volatile int CapMbps;
+        public void SetCap(int mbps) { if (CapMbps == mbps) return; CapMbps = mbps; Log.Write(mbps > 0 ? "débit de l'écran limité à " + mbps + " Mb/s (caméra affichée sur le PC)" : "débit de l'écran rétabli"); AdaptRestart = true; Stop(); }
         public void ResetAdapt() { LiveMbps = 0; congested = relaxed = 0; }
 
         // appelé chaque seconde avec la part du temps passée bloquée à envoyer (0..1)

@@ -324,9 +324,13 @@ static NSString *MPDeviceId(void){
    if(p[1].revents){uint8_t tmp[64];while(read(_wake[0],tmp,sizeof tmp)>0){}}
   }
   // lecture
-  uint8_t buf[32768];
+  // au plus 256 Ko lus par tour : sinon, quand l'écran du PC arrive en continu, la file d'envoi
+  // (caméra, micro…) n'est jamais vidée et l'image de la caméra se fige côté PC
+  uint8_t buf[32768];size_t readNow=0;
   for(;;){
+   if(readNow>=262144)break;
    size_t n=0;OSStatus st=SSLRead(_ctx,buf,sizeof buf,&n);
+   readNow+=n;
    if(n){[in appendBytes:buf length:n];last=CFAbsoluteTimeGetCurrent();}
    if(st==errSSLWouldBlock)break;
    if(st!=noErr)goto done;
