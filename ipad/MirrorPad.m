@@ -1508,6 +1508,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  CGSize _streamSize;
  NSString *_encoderName;
  double _rttMs;
+ int _liveMbps,_saturation;   // envoyés par le PC chaque seconde (débit adaptatif)
  BOOL _streaming;
  // rotation : un rideau aux couleurs de l'app masque la bascule du bureau Windows
  UIView *_curtain;
@@ -1637,6 +1638,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
    if(r.location!=NSNotFound)[items addObject:@[[it substringToIndex:r.location],[it substringFromIndex:r.location+1]]];
   }
   if(items.count)[MPDefaults() setObject:items forKey:@"shortcuts"];
+ } else if([k isEqualToString:@"Q"]&&p.count>=3){
+  _saturation=p[1].intValue;_liveMbps=p[2].intValue;
  } else if([k isEqualToString:@"C"]&&p.count>=4){
   NSUserDefaults *d=MPDefaults();
   if(![d boolForKey:@"qualityPending"]){[d setInteger:p[1].integerValue forKey:@"fps"];[d setInteger:p[2].integerValue forKey:@"mbps"];}
@@ -1819,7 +1822,12 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   [[NSString stringWithFormat:@"%.1f Mb/s",bytes*8/1e6] stringByReplacingOccurrencesOfString:@"." withString:@","],nil];
  if(_streamSize.width>0)[parts addObject:[NSString stringWithFormat:@"%.0f×%.0f",_streamSize.width,_streamSize.height]];
  if(_encoderName.length)[parts addObject:_encoderName];
+ if(_liveMbps>0){
+  NSInteger target=[MPDefaults() integerForKey:@"mbps"];
+  [parts addObject:(target>0&&_liveMbps<target)?[NSString stringWithFormat:@"débit auto %d/%ld Mb/s",_liveMbps,(long)target]:[NSString stringWithFormat:@"débit %d Mb/s",_liveMbps]];
+ }
  if(_rttMs>0)[parts addObject:[NSString stringWithFormat:@"réseau %.0f ms",_rttMs/2]];
+ if(_saturation>=10)[parts addObject:[NSString stringWithFormat:@"saturation %d %%",_saturation]];
  _hud.label.text=[parts componentsJoinedByString:@"  ·  "];
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)c {

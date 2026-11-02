@@ -21,6 +21,36 @@ namespace MirrorPad
 
         public Streamer(Config c) { cfg = c; }
 
+        // ---- Débit adaptatif : si le réseau n'arrive plus à suivre, on baisse la qualité plutôt que de prendre du retard ----
+        public int LiveMbps;                 // débit réellement utilisé (≤ réglage) ; 0 = réglage
+        public volatile bool AdaptRestart;   // ffmpeg relancé par l'adaptation (pas un échec)
+        public Action<int, int> Stats;       // chaque seconde : saturation réseau (%), débit utilisé (Mb/s)
+        int congested, relaxed; DateTime lastDrop = DateTime.MinValue;
+        int Mbps { get { return LiveMbps > 0 ? Math.Min(LiveMbps, cfg.Mbps) : cfg.Mbps; } }
+        public void ResetAdapt() { LiveMbps = 0; congested = relaxed = 0; }
+
+        // appelé chaque seconde avec la part du temps passée bloquée à envoyer (0..1)
+        void Adapt(double blocked)
+        {
+            int cur = Mbps;
+            if (Stats != null) Stats((int)Math.Round(blocked * 100), cur);
+            if (blocked > 0.35) { congested++; relaxed = 0; }
+            else if (blocked < 0.05) { relaxed++; congested = 0; }
+            else { congested = 0; relaxed = 0; }
+            if (congested >= 2 && cur > 3)
+            {
+                LiveMbps = Math.Max(3, (int)(cur * 0.7)); congested = 0; lastDrop = DateTime.Now;
+                Log.Write("réseau saturé (" + (int)(blocked * 100) + " %) : débit " + cur + " → " + LiveMbps + " Mb/s");
+                AdaptRestart = true; Stop();
+            }
+            else if (relaxed >= 15 && cur < cfg.Mbps && (DateTime.Now - lastDrop).TotalSeconds > 30)
+            {
+                LiveMbps = Math.Min(cfg.Mbps, (int)Math.Ceiling(cur * 1.25)); relaxed = 0;
+                Log.Write("réseau dégagé : débit " + cur + " → " + LiveMbps + " Mb/s");
+                AdaptRestart = true; Stop();
+            }
+        }
+
         public static string FindFfmpeg()
         {
             // ffmpeg livré par l'installateur, à côté de MirrorPad.exe
@@ -37,13 +67,15 @@ namespace MirrorPad
         public string EncoderArgs(string e)
         {
             int gop = cfg.Fps * 2;
-            string rate = string.Format("-b:v {0}M -maxrate {0}M -bufsize {1}M", cfg.Mbps, Math.Max(1, cfg.Mbps / 4));
+            int mb = Mbps;
+            // tampon de débit court (≈ 1/6 s) : les images clés restent petites, donc pas de pic de latence
+            string rate = string.Format(System.Globalization.CultureInfo.InvariantCulture, "-b:v {0}M -maxrate {0}M -bufsize {1}k", mb, Math.Max(500, mb * 1000 / 6));
             string qsv = "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -profile:v high -g " + gop + " " + rate;
             switch (e)
             {
                 case "qsv": return "-vf hwmap=derive_device=qsv,format=qsv,vpp_qsv=format=nv12 " + qsv;
                 case "qsv-sys": return "-vf hwdownload,format=bgra,format=nv12 " + qsv;
-                case "nvenc": return "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -bf 0 -rc cbr -profile:v high -g " + gop + " -b:v " + cfg.Mbps + "M";
+                case "nvenc": return "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -bf 0 -rc cbr -delay 0 -profile:v high -g " + gop + " -b:v " + mb + "M -bufsize " + Math.Max(500, mb * 1000 / 6) + "k";
                 default: return "-vf hwdownload,format=bgra,format=yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -g " + gop + " " + rate;
             }
         }
@@ -87,10 +119,23 @@ namespace MirrorPad
             s.Send("V NEW");
             var buf = new byte[64 * 1024];
             var stdout = proc.StandardOutput.BaseStream;
+            AdaptRestart = false;
+            var window = Stopwatch.StartNew(); long blockedTicks = 0;
             try
             {
                 int n;
-                while (!s.IsClosed && (n = stdout.Read(buf, 0, buf.Length)) > 0) s.SendFrame(Session.Video, buf, 0, n);
+                while (!s.IsClosed && (n = stdout.Read(buf, 0, buf.Length)) > 0)
+                {
+                    long t = Stopwatch.GetTimestamp();
+                    s.SendFrame(Session.Video, buf, 0, n);   // bloque quand le Wi-Fi ne suit plus
+                    blockedTicks += Stopwatch.GetTimestamp() - t;
+                    if (window.ElapsedMilliseconds >= 1000)
+                    {
+                        double blocked = (double)blockedTicks / Stopwatch.Frequency / window.Elapsed.TotalSeconds;
+                        blockedTicks = 0; window.Restart();
+                        if ((DateTime.Now - StartedAt).TotalSeconds > 2) Adapt(blocked);   // pas pendant le démarrage
+                    }
+                }
             }
             catch (Exception e) { Log.Write("flux vidéo interrompu : " + e.Message); }
             Stop();

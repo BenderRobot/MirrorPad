@@ -249,6 +249,8 @@ namespace MirrorPad
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
                 input.ResetDiagnostics();
+                streamer.ResetAdapt();
+                streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
@@ -263,7 +265,7 @@ namespace MirrorPad
                     s.Send("C " + cfg.Fps + " " + cfg.Mbps + " " + Uri.EscapeDataString(Streamer.EncoderNames[streamer.ActiveEncoder]));
                     var t0 = DateTime.Now;
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
-                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
+                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested && !streamer.AdaptRestart) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
                 streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
                 s.Close();

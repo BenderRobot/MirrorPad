@@ -59,6 +59,10 @@ namespace MirrorPad
         Session Secure()
         {
             tcp.ReceiveTimeout = 15000;   // l'iPad envoie une mesure de latence chaque seconde
+            tcp.NoDelay = true;
+            // petit tampon d'envoi : si le Wi-Fi ralentit, l'image se met en attente côté PC (où l'adaptation
+            // du débit le voit) au lieu de s'accumuler dans Windows et d'arriver avec des secondes de retard
+            try { tcp.SendBufferSize = 96 * 1024; } catch { }
             ssl = new SslStream(tcp.GetStream(), false);
             ssl.AuthenticateAsServer(Identity.Certificate, false, SslProtocols.Tls12, false);
             return this;
