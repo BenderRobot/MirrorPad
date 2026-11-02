@@ -67,10 +67,12 @@ namespace MirrorPad
 
         void StartDecoder()
         {
-            decoder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags nobuffer -flags low_delay -f h264 -i pipe:0 " +
+            decoder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 500000 -analyzeduration 500000 -f h264 -i pipe:0 " +
                 "-vf scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2 -pix_fmt bgr24 -f rawvideo pipe:1")
-                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true });
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true });
             var d = decoder;
+            d.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data) && errLines++ < 20) Log.Write("caméra (décodage) : " + e.Data); };
+            d.BeginErrorReadLine();
             new Thread(() =>
             {
                 var buf = new byte[W * H * 3];
@@ -85,6 +87,7 @@ namespace MirrorPad
                         var bd = bmp.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                         for (int y = 0; y < H; y++) Marshal.Copy(buf, y * W * 3, bd.Scan0 + y * bd.Stride, W * 3);
                         bmp.UnlockBits(bd);
+                        if (lastFrame == DateTime.MinValue && !firstImageLogged) { firstImageLogged = true; Log.Write("caméra de l'iPad : première image affichée"); }
                         lastFrame = DateTime.Now;
                         if (IsDisposed) { bmp.Dispose(); return; }
                         BeginInvoke((Action)(() =>
@@ -101,8 +104,11 @@ namespace MirrorPad
         }
 
         // flux H.264 de l'iPad (trame 3)
+        int errLines; bool firstImageLogged; long fed;
         public void Feed(byte[] h264)
         {
+            if (fed == 0) Log.Write("caméra de l'iPad : premières données reçues (" + h264.Length + " octets, début " + BitConverter.ToString(h264, 0, Math.Min(8, h264.Length)) + ")");
+            fed += h264.Length;
             try { var d = decoder; if (d != null) { d.StandardInput.BaseStream.Write(h264, 0, h264.Length); d.StandardInput.BaseStream.Flush(); } } catch { }
             try { var r = recorder; if (r != null) r.StandardInput.BaseStream.Write(h264, 0, h264.Length); } catch { }
         }
