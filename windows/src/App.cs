@@ -270,14 +270,29 @@ namespace MirrorPad
             }
         }
 
+        // Rebranche l'écran virtuel s'il manque (après un verrouillage de l'iPad ou un débranchement manuel)
         void WakeVirtual()
         {
             lock (displayLock)
             {
-                if (!cfg.VirtualDetached || string.IsNullOrEmpty(cfg.VirtualDevice)) return;
-                int r = Native.AttachDisplay(cfg.VirtualDevice, cfg.VirtualX, cfg.VirtualY, cfg.VirtualW, cfg.VirtualH);
+                var dev = cfg.VirtualDevice;
+                if (string.IsNullOrEmpty(dev)) return;
+                int x, y, w, h;
+                if (Native.GetDisplay(dev, out x, out y, out w, out h)) { if (cfg.VirtualDetached) { cfg.VirtualDetached = false; cfg.Save(); } return; }
+                int r = Native.AttachDisplay(dev, cfg.VirtualX, cfg.VirtualY, cfg.VirtualW, cfg.VirtualH);
+                if (r != 0 || !Native.GetDisplay(dev, out x, out y, out w, out h))
+                {
+                    // repli : « Étendre » sur tous les écrans, puis on remet la définition mémorisée
+                    int e = Native.ExtendAll();
+                    Thread.Sleep(1500);
+                    if (!Native.GetDisplay(dev, out x, out y, out w, out h))
+                    {
+                        Log.Write("impossible de rebrancher l'écran virtuel (codes " + r + " / " + e + ") : Windows + P > Étendre");
+                        return;
+                    }
+                    if (cfg.VirtualW > 0 && (w != cfg.VirtualW || h != cfg.VirtualH)) Native.SetResolution(dev, cfg.VirtualW, cfg.VirtualH);
+                }
                 cfg.VirtualDetached = false; cfg.Save();
-                if (r != 0) { Log.Write("impossible de rebrancher l'écran virtuel (code " + r + ")"); return; }
                 Log.Write("écran virtuel rebranché (" + cfg.VirtualW + "x" + cfg.VirtualH + ")");
                 Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
                 input.RefreshBounds();

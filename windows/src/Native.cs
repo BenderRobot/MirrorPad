@@ -181,6 +181,10 @@ namespace MirrorPad
             return r;
         }
 
+        [DllImport("user32.dll")] static extern int SetDisplayConfig(uint numPath, IntPtr paths, uint numMode, IntPtr modes, uint flags);
+        // Équivalent de Windows + P > « Étendre » : tous les écrans connectés reviennent sur le bureau
+        public static int ExtendAll() { return SetDisplayConfig(0, IntPtr.Zero, 0, IntPtr.Zero, 0x80 | 0x4); }   // SDC_APPLY | SDC_TOPOLOGY_EXTEND
+
         // Rebranche l'écran à sa position et dans sa définition d'origine
         public static int AttachDisplay(string device, int x, int y, int w, int h)
         {
