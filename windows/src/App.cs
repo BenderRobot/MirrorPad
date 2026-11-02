@@ -46,6 +46,7 @@ namespace MirrorPad
         readonly object displayLock = new object();
         readonly CameraBridge camera = new CameraBridge();
         readonly FocusWatcher focus = new FocusWatcher();
+        readonly PcAudio sound = new PcAudio();
         readonly MicPlayer mic = new MicPlayer();
         ClipboardWatcher clip;
         int ticks;
@@ -269,7 +270,7 @@ namespace MirrorPad
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
                     if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested && !streamer.AdaptRestart) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
-                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop(); focus.Stop();
+                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop(); focus.Stop(); sound.Stop();
                 s.Close();
                 session = null;
                 Thread.Sleep(1000);
@@ -392,6 +393,20 @@ namespace MirrorPad
 
         void HandleMedia(string[] p)
         {
+            if (p[0] == "SND")
+            {
+                // son du PC vers les haut-parleurs de l'iPad
+                var s = session;
+                if (s == null) return;
+                if (p.Length >= 2 && p[1] == "START")
+                {
+                    sound.Format = rate => s.Send("SND FMT " + rate + " 2");
+                    sound.Packet = pcm => s.SendFrame(Session.PcSound, pcm, 0, pcm.Length);
+                    sound.Start();
+                }
+                else sound.Stop();
+                return;
+            }
             if (p[0] == "CAM") { if (p.Length >= 2 && p[1] == "START") ThreadPool.QueueUserWorkItem(_ => camera.Start(ffmpeg)); else camera.Stop(); }
             else if (p[0] == "MIC")
             {

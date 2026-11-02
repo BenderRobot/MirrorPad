@@ -19,7 +19,7 @@ namespace MirrorPad
 {
     public class Session
     {
-        public const byte Control = 1, Video = 2, Camera = 3, ClipImage = 4, File = 5, Audio = 6;
+        public const byte Control = 1, Video = 2, Camera = 3, ClipImage = 4, File = 5, Audio = 6, PcSound = 7;
 
         TcpClient tcp;
         SslStream ssl;

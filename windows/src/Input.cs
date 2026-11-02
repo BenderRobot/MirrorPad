@@ -120,15 +120,26 @@ namespace MirrorPad
                     }
                     else
                     {
-                        emuWheelAcc += (int)Math.Round(dy * 3);
-                        int steps = emuWheelAcc / 40;
-                        if (steps != 0) { Native.mouse_event(Native.Wheel, 0, 0, steps * 40, UIntPtr.Zero); emuWheelAcc -= steps * 40; }
+                        // défilement fin : petits crans à chaque mouvement (les navigateurs les lissent)
+                        emuScroll += dy * 3;
+                        int units = (int)emuScroll;
+                        if (units != 0) { Native.mouse_event(Native.Wheel, 0, 0, units, UIntPtr.Zero); emuScroll -= units; }
+                        var now = DateTime.Now; double dt = (now - emuLastMove).TotalSeconds;
+                        if (dt > 0 && dt < 0.1) emuVelocity = emuVelocity * 0.6 + (dy * 3 / dt) * 0.4;   // unités molette / s
+                        emuLastMove = now;
                     }
                 }
                 emuLastCy = cy; emuLastSpread = spread;
                 return;
             }
             emuLastCy = double.NaN; emuLastSpread = double.NaN; emuWheelAcc = 0; emuZoomAcc = 0;
+            if (active.Count == 0 && emuTwo)
+            {
+                // doigts levés en plein mouvement : le défilement continue et ralentit (inertie)
+                if (Math.Abs(emuVelocity) > 300 && (DateTime.Now - emuLastMove).TotalSeconds < 0.08) StartInertia(emuVelocity);
+                emuVelocity = 0;
+            }
+            if (active.Count > 0) StopInertia();
             if (active.Count == 0) emuTwo = false;
             if (emuTwo) return;   // on attend que tous les doigts soient levés après un geste à deux doigts
             foreach (var t in pts)
@@ -168,6 +179,21 @@ namespace MirrorPad
                 }
             }
         }
+        double emuScroll, emuVelocity; DateTime emuLastMove;
+        System.Threading.Timer inertia; double inertiaV;
+        void StartInertia(double v)
+        {
+            StopInertia(); inertiaV = v;
+            inertia = new System.Threading.Timer(_ =>
+            {
+                inertiaV *= 0.94;
+                if (Math.Abs(inertiaV) < 120) { StopInertia(); return; }
+                emuScroll += inertiaV / 60;
+                int units = (int)emuScroll;
+                if (units != 0) { Native.mouse_event(Native.Wheel, 0, 0, units, UIntPtr.Zero); emuScroll -= units; }
+            }, null, 16, 16);
+        }
+        void StopInertia() { var t = inertia; inertia = null; if (t != null) t.Dispose(); }
         void CancelLong() { var t = emuLongTimer; emuLongTimer = null; if (t != null) t.Dispose(); }
         void LongPress()
         {
@@ -267,7 +293,7 @@ namespace MirrorPad
             {
                 case "F": TouchFrame(p); break;
                 case "SLEEP": if (Sleep != null) Sleep(); break;
-                case "CAM": case "MIC": case "CB": if (Media != null) Media(p); break;
+                case "CAM": case "MIC": case "CB": case "SND": if (Media != null) Media(p); break;
                 case "PD": case "PM": case "PU": Pen(p); break;
                 case "RM": if (p.Length >= 3 && int.TryParse(p[1], out dx) && int.TryParse(p[2], out dy)) Native.MoveRelative(dx, dy); break;
                 case "CL": Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero); break;

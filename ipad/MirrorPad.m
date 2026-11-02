@@ -17,6 +17,7 @@
 #import <Security/SecureTransport.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <VideoToolbox/VideoToolbox.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #define MP_PORT 7272        // canal chiffré unique PC <-> iPad (image + tactile + contrôle)
 
@@ -201,6 +202,7 @@ static NSString *MPDeviceId(void){
 - (void)send:(NSString*)line;
 - (void)disconnect;               // envoie la file d'attente puis ferme la session
 - (void)sendBinary:(uint8_t)type data:(NSData*)d;   // 3 webcam, 4 image copiée, 5 fichier, 6 micro
+@property(nonatomic,copy) void (^onSound)(NSData *pcm);   // 7 : son du PC (fil réseau)
 @end
 @implementation MPSecureServer {
  volatile BOOL _closing;
@@ -340,6 +342,9 @@ static NSString *MPDeviceId(void){
    } else if(type==4&&_auth){
     NSData *img=[NSData dataWithBytes:h+4 length:len];
     [self ui:^{if(self.onBinary)self.onBinary(4,img);}];
+   } else if(type==7&&_auth){
+    // son du PC : remis directement au haut-parleur (sans passer par le fil principal)
+    if(self.onSound)self.onSound([NSData dataWithBytes:h+4 length:len]);
    } else if(type==1){
     NSString *line=[[NSString alloc] initWithBytes:h+4 length:len encoding:NSUTF8StringEncoding]?:@"";
     NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
@@ -529,9 +534,10 @@ done:
 }
 // Molette : 12 points de déplacement = 40 unités Windows (120 = un cran)
 - (void)scrollBy:(CGFloat)dy {
+ // défilement fin : petits crans (≈ 3,3 unités Windows par point), lissés par les navigateurs et Office
  _scrollAcc+=dy;
- int steps=(int)(_scrollAcc/12);
- if(steps){_scrollAcc-=steps*12;[self out:[NSString stringWithFormat:@"W %d\n",steps*40]];}
+ int units=(int)(_scrollAcc*40/12);
+ if(units){_scrollAcc-=units*12.0/40;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
 }
 - (void)stopInertia {[_inertia invalidate];_inertia=nil;}
 - (void)inertiaTick:(CADisplayLink*)link {
@@ -739,6 +745,59 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
 @end
 
 // Micro de l'iPad -> PCM 16 bits mono 48 kHz (trame 6), joué sur le PC dans VB-CABLE
+// Haut-parleur : joue le son du PC (PCM 16 bits stéréo) avec un petit tampon anti-saccades (60 à 200 ms)
+@interface MPSpeaker : NSObject
+- (void)startRate:(double)rate;
+- (void)feed:(NSData*)pcm;
+- (void)stop;
+@property(nonatomic,readonly) BOOL running;
+@end
+@implementation MPSpeaker { AudioQueueRef _q; NSMutableData *_ring; NSLock *_lock; double _rate; BOOL _primed; }
+static void MPSpeakerCB(void *ud,AudioQueueRef q,AudioQueueBufferRef b){
+ MPSpeaker *s=(__bridge MPSpeaker*)ud;[s fill:b];AudioQueueEnqueueBuffer(q,b,0,NULL);
+}
+- (BOOL)running {return _q!=NULL;}
+- (void)fill:(AudioQueueBufferRef)b {
+ UInt32 want=b->mAudioDataBytesCapacity;NSUInteger n=0;
+ [_lock lock];
+ NSUInteger prime=(NSUInteger)(_rate*4*0.06)&~3u,maxBytes=(NSUInteger)(_rate*4*0.2)&~3u;
+ if(_ring.length>maxBytes)[_ring replaceBytesInRange:NSMakeRange(0,(_ring.length-prime)&~3u) withBytes:NULL length:0];   // trop de retard : on rattrape
+ if(!_primed&&_ring.length>=prime)_primed=YES;
+ if(_primed){
+  n=MIN(want,_ring.length);
+  memcpy(b->mAudioData,_ring.bytes,n);
+  [_ring replaceBytesInRange:NSMakeRange(0,n) withBytes:NULL length:0];
+  if(n<want)_primed=NO;   // tampon vide : on attend de nouveau 60 ms de son
+ }
+ [_lock unlock];
+ if(n<want)memset((char*)b->mAudioData+n,0,want-n);
+ b->mAudioDataByteSize=want;
+}
+- (void)startRate:(double)rate {
+ [self stop];
+ _rate=rate>0?rate:48000;_ring=[NSMutableData data];_lock=[NSLock new];_primed=NO;
+ Class Session=NSClassFromString(@"AVAudioSession");
+ AVAudioSession *as=[Session sharedInstance];
+ if(![as.category isEqualToString:@"AVAudioSessionCategoryPlayAndRecord"])   // le micro, s'il tourne, garde sa catégorie (qui joue aussi)
+  [as setCategory:@"AVAudioSessionCategoryPlayback" withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+ [as setActive:YES error:nil];
+ AudioStreamBasicDescription f={0};
+ f.mSampleRate=_rate;f.mFormatID=kAudioFormatLinearPCM;f.mFormatFlags=kLinearPCMFormatFlagIsSignedInteger|kLinearPCMFormatFlagIsPacked;
+ f.mChannelsPerFrame=2;f.mBitsPerChannel=16;f.mBytesPerFrame=4;f.mFramesPerPacket=1;f.mBytesPerPacket=4;
+ if(AudioQueueNewOutput(&f,MPSpeakerCB,(__bridge void*)self,NULL,NULL,0,&_q)!=noErr){_q=NULL;return;}
+ UInt32 bytes=((UInt32)(_rate*0.02))*4;   // tampons de 20 ms
+ for(int i=0;i<3;i++){AudioQueueBufferRef b;if(AudioQueueAllocateBuffer(_q,bytes,&b)==noErr){[self fill:b];AudioQueueEnqueueBuffer(_q,b,0,NULL);}}
+ AudioQueueStart(_q,NULL);
+}
+- (void)feed:(NSData*)pcm {
+ if(!_q)return;
+ [_lock lock];[_ring appendData:pcm];[_lock unlock];
+}
+- (void)stop {
+ if(_q){AudioQueueStop(_q,true);AudioQueueDispose(_q,true);_q=NULL;}
+}
+@end
+
 @interface MPMic : NSObject
 @property(nonatomic,copy) void (^onPCM)(NSData *pcm);
 @property(nonatomic,readonly) BOOL running;
@@ -985,7 +1044,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 
 static NSUserDefaults *MPDefaults(void){
  NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
- [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES}];
+ [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES,@"pcSound":@YES}];
  return d;
 }
 static NSString *MPAgo(NSDate *date){
@@ -1010,7 +1069,7 @@ static NSString *MPAgo(NSDate *date){
 @end
 @implementation MPSettingsPanel {
  UISegmentedControl *_fps,*_quality,*_inputMode,*_penTool;
- UISwitch *_longPress,*_inertia,*_hud,*_clip;
+ UISwitch *_longPress,*_inertia,*_hud,*_clip,*_sound;
  UIStackView *_history,*_paired;
 }
 static const int MPQualities[3]={6,12,20};
@@ -1086,7 +1145,7 @@ static const int MPQualities[3]={6,12,20};
  sensors.distribution=UIStackViewDistributionFillEqually;sensors.spacing=10;
  _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
  _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
- _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];
+ _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];_sound=[self toggle];
  UILabel *note=MPLabel(@"La qualité est appliquée au PC dès qu'il est connecté.",13,UIFontWeightRegular,.6,0);
  _history=[UIStackView new];_history.axis=UILayoutConstraintAxisVertical;_history.spacing=6;
  _paired=[UIStackView new];_paired.axis=UILayoutConstraintAxisVertical;_paired.spacing=8;_paired.alignment=UIStackViewAlignmentLeading;
@@ -1094,7 +1153,7 @@ static const int MPQualities[3]={6,12,20};
  UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:@[head,
    [self section:@"MODE"],[self row:@"Le doigt agit comme" control:_inputMode],[self row:@"Outil du stylet" control:_penTool],modeNote,tools,
    [self section:@"CAPTEURS DE L'IPAD"],sensors,
-   [self section:@"PARTAGE"],[self row:@"Presse-papiers partagé avec le PC" control:_clip],
+   [self section:@"PARTAGE"],[self row:@"Presse-papiers partagé avec le PC" control:_clip],[self row:@"Son du PC sur l'iPad" control:_sound],
    [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
    [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
    [self section:@"AFFICHAGE"],[self row:@"Indicateur de performance" control:_hud],
@@ -1129,7 +1188,7 @@ static const int MPQualities[3]={6,12,20};
  _fps.selectedSegmentIndex=[d integerForKey:@"fps"]>=60?1:0;
  NSInteger m=[d integerForKey:@"mbps"];_quality.selectedSegmentIndex=m<=8?0:(m<=15?1:2);
  _inputMode.selectedSegmentIndex=[d integerForKey:@"inputMode"];_penTool.selectedSegmentIndex=[d boolForKey:@"penEraser"]?1:0;
- _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
+ _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_sound.on=[d boolForKey:@"pcSound"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];
  for(UIView *v in _history.arrangedSubviews){[_history removeArrangedSubview:v];[v removeFromSuperview];}
  NSArray *h=[d arrayForKey:@"history"];
  if(!h.count)[_history addArrangedSubview:MPLabel(@"Aucun PC pour l'instant.",15,UIFontWeightRegular,.6,0)];
@@ -1158,7 +1217,7 @@ static const int MPQualities[3]={6,12,20};
 }
 - (void)togglesChanged {
  NSUserDefaults *d=MPDefaults();
- [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_clip.on forKey:@"clipboard"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
+ [d setBool:_longPress.on forKey:@"longPress"];[d setBool:_clip.on forKey:@"clipboard"];[d setBool:_sound.on forKey:@"pcSound"];[d setBool:_inertia.on forKey:@"inertia"];[d setBool:_hud.on forKey:@"hud"];
  if(self.onChange)self.onChange();
 }
 - (void)showIn:(UIView*)parent {
@@ -1325,8 +1384,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
   if(hypot(p.x-_start.x,p.y-_start.y)>6)_tap=NO;
  } else if(a.count==2){
   CGPoint c=[self centroid:a];CGFloat dy=c.y-_scrollRef;_scrollRef=c.y;_scrollAcc+=dy;_scrollTotal+=fabs(dy);
-  int steps=(int)(_scrollAcc/12);
-  if(steps){_scrollAcc-=steps*12;[self out:[NSString stringWithFormat:@"W %d\n",steps*40]];}
+  int units=(int)(_scrollAcc*40/12);
+  if(units){_scrollAcc-=units*12.0/40;[self out:[NSString stringWithFormat:@"W %d\n",units]];}
   if(_scrollTotal>6)_tap=NO;
  } else if(a.count>=3){
   _c3=[self centroid:a];
@@ -1510,6 +1569,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  double _rttMs;
  int _liveMbps,_saturation;   // envoyés par le PC chaque seconde (débit adaptatif)
  BOOL _autoKb;                // clavier ouvert parce que le PC a signalé une zone de saisie
+ MPSpeaker *_speaker;         // son du PC
+ BOOL _soundOn;               // son demandé au PC pour cette connexion
  CGRect _fieldNorm;           // zone de saisie (coordonnées 0..1 de l'écran du PC)
  CGFloat _kbHeight;           // hauteur du clavier affiché
  BOOL _streaming;
@@ -1567,7 +1628,10 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  _input.onNotice=^(NSString *title,NSString *text,BOOL ok){[w showNotice:title text:text code:nil ok:ok];};
  _input.onVideoStart=^(int fd){dispatch_async(dispatch_get_main_queue(),^{[w startDecoder:fd];});};
  _input.onBinary=^(uint8_t type,NSData *data){if(type==4)[w clipboardImage:data];};
- _input.onClosed=^{[w sensorsOff:NO];};
+ _speaker=[MPSpeaker new];
+ MPSpeaker *spk=_speaker;
+ _input.onSound=^(NSData *pcm){[spk feed:pcm];};
+ _input.onClosed=^{[w sensorsOff:NO];[w soundOff];};
  [_input start];
  [self applyPreferences];
  [self refreshLastPC];
@@ -1612,7 +1676,9 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 
 #pragma mark Contrôle (canal avec le PC)
 - (NSString*)orientationLine:(CGSize)size {return size.height>size.width?@"O P\n":@"O L\n";}
+- (void)soundOff {_soundOn=NO;[_speaker stop];}
 - (void)controlConnected {
+ _soundOn=NO;[self syncSound];
  _clipCount=UIPasteboard.generalPasteboard.changeCount;   // on ne pousse pas l'ancien contenu à la connexion
  [_input send:[self orientationLine:self.view.bounds.size]];
  NSUserDefaults *d=MPDefaults();
@@ -1643,6 +1709,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
    if(r.location!=NSNotFound)[items addObject:@[[it substringToIndex:r.location],[it substringFromIndex:r.location+1]]];
   }
   if(items.count)[MPDefaults() setObject:items forKey:@"shortcuts"];
+ } else if([k isEqualToString:@"SND"]&&p.count>=3&&[p[1] isEqualToString:@"FMT"]){
+  [_speaker startRate:p[2].doubleValue];   // le PC annonce la fréquence avant le premier paquet
  } else if([k isEqualToString:@"KB"]){
   [self fieldLine:p];
  } else if([k isEqualToString:@"Q"]&&p.count>=3){
@@ -1669,6 +1737,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)applyPreferences {
  NSUserDefaults *d=MPDefaults();
+ [self syncSound];
  _touch.longPressEnabled=[d boolForKey:@"longPress"];
  _touch.inertiaEnabled=[d boolForKey:@"inertia"];
  _touch.inputMode=[d integerForKey:@"inputMode"];
@@ -1702,6 +1771,14 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  __weak MPSecureServer *in=_input;
  v.emit=^(NSString *l){[in send:l];};
  [v showIn:self.view];
+}
+// Son du PC : demandé à la connexion (et quand le réglage change), coupé à la déconnexion
+- (void)syncSound {
+ BOOL want=_input.connected&&[MPDefaults() boolForKey:@"pcSound"];
+ if(want==_soundOn)return;
+ _soundOn=want;
+ if(want)[_input send:@"SND START\n"];
+ else {if(_input.connected)[_input send:@"SND STOP\n"];[_speaker stop];}
 }
 - (void)showKeyboard {_autoKb=NO;_fieldNorm=CGRectZero;[_touch becomeFirstResponder];}
 
