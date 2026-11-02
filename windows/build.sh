@@ -11,3 +11,11 @@ mcs -target:winexe -out:MirrorPad.exe -langversion:7 -optimize+ -nostdlib -nocon
   -r:$REF/System.Xml.dll -r:$REF/Facades/System.Runtime.dll \
   src/*.cs
 echo "BUILD_OK MirrorPad.exe"
+
+# Outil d'installation des pilotes : embarqué dans MirrorPad-Setup.exe seulement, jamais installé sur le PC
+mcs -target:exe -out:installer/MirrorPadInstall.exe -langversion:7 -optimize+ -nostdlib -noconfig \
+  -win32icon:MirrorPad.ico \
+  -r:$REF/mscorlib.dll -r:$REF/System.dll -r:$REF/System.Core.dll -r:$REF/System.Xml.dll \
+  -r:$REF/System.IO.Compression.dll -r:$REF/System.IO.Compression.FileSystem.dll -r:$REF/Facades/System.Runtime.dll \
+  helper/*.cs
+echo "BUILD_OK MirrorPadInstall.exe"

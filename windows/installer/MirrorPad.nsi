@@ -103,7 +103,8 @@ Section "Écran virtuel" SecDisplay
   File "..\drivers\vdd\mttvdd.cat"
   File "..\drivers\vdd\Virtual_Display_Driver.cer"
   File "..\drivers\vdd\vdd_settings.xml"
-  nsExec::ExecToLog '"$INSTDIR\MirrorPad.exe" --setup-display "$PLUGINSDIR\vdd"'
+  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-display "$PLUGINSDIR\vdd"'
   Pop $0
   ${If} $0 == 3010
     SetRebootFlag true
@@ -130,7 +131,8 @@ SectionEnd
 
 Section "Micro (l'iPad comme micro)" SecMic
   DetailPrint "Téléchargement et installation de VB-CABLE (vb-audio.com)..."
-  nsExec::ExecToLog '"$INSTDIR\MirrorPad.exe" --setup-vbcable'
+  File "/oname=$PLUGINSDIR\MirrorPadInstall.exe" "MirrorPadInstall.exe"
+  nsExec::ExecToLog '"$PLUGINSDIR\MirrorPadInstall.exe" --setup-vbcable'
   Pop $0
   ${If} $0 != 0
     StrCpy $Warnings "$Warnings$\r$\n- micro (code $0, connexion Internet nécessaire)"
@@ -162,7 +164,7 @@ Section "Uninstall"
   nsExec::Exec 'taskkill /f /im MirrorPad.exe'
   Pop $0
   Sleep 800
-  nsExec::Exec '"$INSTDIR\MirrorPad.exe" --uninstall-cleanup'
+  nsExec::Exec 'schtasks.exe /delete /tn MirrorPad /f'
   Pop $0
   Delete "$SMPROGRAMS\${APP}.lnk"
   Delete "$SMSTARTUP\${APP}.lnk"

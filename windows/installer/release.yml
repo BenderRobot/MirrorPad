@@ -49,7 +49,7 @@ jobs:
         run: |
           echo "$VERSION" > windows/version.txt
           cd windows
-          zip ../MirrorPad-Windows.zip MirrorPad.exe MirrorPad.vbs MirrorPad-App.ps1 MirrorPad.ico MirrorPad.png Installer-Pilotes.ps1 version.txt
+          zip ../MirrorPad-Windows.zip MirrorPad.exe MirrorPad.vbs MirrorPad-App.ps1 MirrorPad.ico MirrorPad.png version.txt
       - name: Préparer l'installateur (ffmpeg + webcam virtuelle)
         env:
           GH_TOKEN: ${{ github.token }}

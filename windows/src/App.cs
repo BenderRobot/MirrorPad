@@ -309,16 +309,10 @@ namespace MirrorPad
             }
         }
 
-        // Lance Installer-Pilotes.ps1 (akvirtualcamera + VB-CABLE) dans une fenêtre PowerShell visible
+        // Les pilotes webcam / micro s'installent avec MirrorPad-Setup.exe (cases « Webcam » et « Micro »)
         void InstallDrivers()
         {
-            var ps1 = Path.Combine(appDir, "Installer-Pilotes.ps1");
-            if (!File.Exists(ps1)) { Balloon("Installer-Pilotes.ps1 manquant : faites « Rechercher une mise à jour ».", ToolTipIcon.Warning); return; }
-            try
-            {
-                Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\"") { UseShellExecute = true });
-            }
-            catch (Exception e) { Log.Write("installation des pilotes : " + e.Message); }
+            Balloon("Relancez MirrorPad-Setup.exe et laissez cochées « Webcam » et « Micro ». Vos réglages sont conservés.", ToolTipIcon.Info);
         }
 
         // ---------- capteurs de l'iPad ----------

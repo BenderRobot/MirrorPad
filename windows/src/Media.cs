@@ -66,7 +66,7 @@ namespace MirrorPad
         {
             Stop();
             var mgr = FindManager();
-            if (mgr == null) { Notify("Webcam : pilote manquant. Menu MirrorPad (icône près de l'horloge) > « Installer la webcam et le micro »."); return; }
+            if (mgr == null) { Notify("Webcam : pilote manquant. Relancez MirrorPad-Setup.exe avec la case « Webcam » cochée."); return; }
             try
             {
                 if (!EnsureDevice(mgr)) { Notify("Webcam : impossible de créer la webcam virtuelle (autorisation refusée ?)."); return; }
@@ -148,7 +148,7 @@ namespace MirrorPad
         {
             Stop();
             int id = FindCable();
-            if (id < 0) { Notify("Micro : pilote manquant. Menu MirrorPad (icône près de l'horloge) > « Installer la webcam et le micro »."); return; }
+            if (id < 0) { Notify("Micro : pilote manquant. Relancez MirrorPad-Setup.exe avec la case « Micro » cochée."); return; }
             var f = new WAVEFORMATEX { wFormatTag = 1, nChannels = (ushort)channels, nSamplesPerSec = (uint)rate, wBitsPerSample = 16 };
             f.nBlockAlign = (ushort)(channels * 2); f.nAvgBytesPerSec = (uint)(rate * f.nBlockAlign);
             if (waveOutOpen(out dev, new UIntPtr((uint)id), ref f, IntPtr.Zero, IntPtr.Zero, 0) != 0) { dev = IntPtr.Zero; Notify("Micro : impossible d'ouvrir VB-CABLE."); return; }
