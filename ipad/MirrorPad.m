@@ -1509,6 +1509,9 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  NSString *_encoderName;
  double _rttMs;
  int _liveMbps,_saturation;   // envoyés par le PC chaque seconde (débit adaptatif)
+ BOOL _autoKb;                // clavier ouvert parce que le PC a signalé une zone de saisie
+ CGRect _fieldNorm;           // zone de saisie (coordonnées 0..1 de l'écran du PC)
+ CGFloat _kbHeight;           // hauteur du clavier affiché
  BOOL _streaming;
  // rotation : un rideau aux couleurs de l'app masque la bascule du bureau Windows
  UIView *_curtain;
@@ -1571,6 +1574,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  [self refreshAddress];
  [self publishBonjour];
  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
+ [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardFrame:) name:UIKeyboardWillChangeFrameNotification object:nil];
+ [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardHide:) name:UIKeyboardWillHideNotification object:nil];
  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
  _timer=[NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t){(void)t;[w refreshAddress];}];
  _statsTimer=[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t){(void)t;[w statsTick];}];
@@ -1638,6 +1643,8 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
    if(r.location!=NSNotFound)[items addObject:@[[it substringToIndex:r.location],[it substringFromIndex:r.location+1]]];
   }
   if(items.count)[MPDefaults() setObject:items forKey:@"shortcuts"];
+ } else if([k isEqualToString:@"KB"]){
+  [self fieldLine:p];
  } else if([k isEqualToString:@"Q"]&&p.count>=3){
   _saturation=p[1].intValue;_liveMbps=p[2].intValue;
  } else if([k isEqualToString:@"C"]&&p.count>=4){
@@ -1696,7 +1703,46 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  v.emit=^(NSString *l){[in send:l];};
  [v showIn:self.view];
 }
-- (void)showKeyboard {[_touch becomeFirstResponder];}
+- (void)showKeyboard {_autoKb=NO;_fieldNorm=CGRectZero;[_touch becomeFirstResponder];}
+
+#pragma mark Clavier automatique sur les zones de saisie du PC
+// « KB 1 x y w h » : une zone de texte de l'écran de l'iPad vient de recevoir le focus ; « KB 0 » : plus de zone de saisie
+- (void)fieldLine:(NSArray<NSString*>*)p {
+ if(!_streaming)return;
+ if(p.count>=6&&[p[1] isEqualToString:@"1"]){
+  _fieldNorm=CGRectMake(p[2].doubleValue,p[3].doubleValue,p[4].doubleValue,p[5].doubleValue);
+  if(!_touch.isFirstResponder){_autoKb=YES;[_touch becomeFirstResponder];}
+  [self applyKeyboardShift:YES];
+ } else if(p.count>=2&&[p[1] isEqualToString:@"0"]){
+  _fieldNorm=CGRectZero;
+  if(_autoKb&&_touch.isFirstResponder)[_touch resignFirstResponder];
+  _autoKb=NO;
+  [self applyKeyboardShift:YES];
+ }
+}
+- (void)keyboardFrame:(NSNotification*)n {
+ CGRect f=[self.view convertRect:[n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue] fromView:nil];
+ _kbHeight=fmax(0,CGRectGetMaxY(self.view.bounds)-CGRectGetMinY(f));
+ [self applyKeyboardShift:YES];
+}
+- (void)keyboardHide:(NSNotification*)n {(void)n;_kbHeight=0;_autoKb=NO;[self applyKeyboardShift:YES];}
+// Remonte l'image (et la zone tactile) juste assez pour que la zone de saisie reste visible au-dessus du clavier
+- (void)applyKeyboardShift:(BOOL)animated {
+ CGFloat dy=0;
+ if(_kbHeight>0&&_fieldNorm.size.height>0){
+  CGRect v=self.view.bounds;
+  if(_streamSize.width>0&&_streamSize.height>0)v=AVMakeRectWithAspectRatioInsideRect(_streamSize,self.view.bounds);
+  CGFloat fieldBottom=v.origin.y+(_fieldNorm.origin.y+_fieldNorm.size.height)*v.size.height;
+  CGFloat kbTop=self.view.bounds.size.height-_kbHeight;
+  dy=fmin(_kbHeight,fmax(0,fieldBottom-kbTop+28));
+ }
+ CGAffineTransform t=CGAffineTransformMakeTranslation(0,-dy);
+ if(CGAffineTransformEqualToTransform(_touch.transform,t))return;
+ [CATransaction begin];[CATransaction setAnimationDuration:animated?.25:0];
+ _video.affineTransform=t;
+ [CATransaction commit];
+ [UIView animateWithDuration:animated?.25:0 animations:^{self->_touch.transform=t;}];
+}
 
 #pragma mark Capteurs : webcam, micro, photos, presse-papiers
 - (void)showCamera {
@@ -1883,7 +1929,10 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)viewDidLayoutSubviews {
  [super viewDidLayoutSubviews];
- [CATransaction begin];[CATransaction setDisableActions:YES];_video.frame=self.view.bounds;[CATransaction commit];
+ [CATransaction begin];[CATransaction setDisableActions:YES];
+ // bounds + position (et pas frame) : la translation éventuelle « clavier » reste appliquée
+ _video.bounds=self.view.bounds;_video.position=CGPointMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds));
+ [CATransaction commit];
 }
 - (void)enqueue:(CMSampleBufferRef)sb gen:(unsigned)gen {
  if(gen!=_decoderGen)return;   // image d'un flux précédent

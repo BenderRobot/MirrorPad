@@ -45,6 +45,7 @@ namespace MirrorPad
         DateTime lastAlive = DateTime.Now;
         readonly object displayLock = new object();
         readonly CameraBridge camera = new CameraBridge();
+        readonly FocusWatcher focus = new FocusWatcher();
         readonly MicPlayer mic = new MicPlayer();
         ClipboardWatcher clip;
         int ticks;
@@ -251,6 +252,7 @@ namespace MirrorPad
                 input.ResetDiagnostics();
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
+                if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); focus.Start(); }
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
@@ -267,7 +269,7 @@ namespace MirrorPad
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
                     if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested && !streamer.AdaptRestart) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
-                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
+                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop(); focus.Stop();
                 s.Close();
                 session = null;
                 Thread.Sleep(1000);
