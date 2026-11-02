@@ -1890,7 +1890,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  UIView *_curtain;
  BOOL _rotating,_streamAlive,_revealScheduled;
  unsigned _rotGen,_rotFromGen;
- NSString *_pendingOrientation;
+ NSString *_pendingOrientation, *_lastRes;   // dernière ligne « RES » envoyée au PC
 }
 - (UILabel*)label:(NSString*)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor*)c {
  UILabel *l=[UILabel new];l.text=t;l.font=[UIFont systemFontOfSize:s weight:w];l.textColor=c;l.numberOfLines=0;l.textAlignment=NSTextAlignmentCenter;return l;
@@ -2008,7 +2008,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (void)controlConnected {
  _soundOn=NO;[self syncSound];
  _clipCount=UIPasteboard.generalPasteboard.changeCount;   // on ne pousse pas l'ancien contenu à la connexion
- [_input send:[self orientationLine:self.view.bounds.size]];
+ _lastRes=nil;[self sendResolution];   // taille exacte de la zone d'image : le PC y règle l'écran virtuel
  NSUserDefaults *d=MPDefaults();
  if([d boolForKey:@"qualityPending"]){
   [_input send:[NSString stringWithFormat:@"S %ld %ld\n",(long)[d integerForKey:@"fps"],(long)[d integerForKey:@"mbps"]]];
@@ -2454,8 +2454,23 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [self performSelector:@selector(sendPendingOrientation) withObject:nil afterDelay:.2];
 }
 - (void)sendPendingOrientation {
- if(_pendingOrientation)[_input send:_pendingOrientation];   // le PC bascule l'écran virtuel en portrait / paysage
  _pendingOrientation=nil;
+ [self sendResolution];   // le PC bascule l'écran virtuel en portrait / paysage, à la taille de la zone d'image
+}
+// « RES w h » : définition en pixels de la zone d'image (écran moins la Touch Bar dépliée),
+// pour que le bureau du PC la remplisse exactement, sans bandes noires sur les côtés
+- (void)scheduleResolution {
+ [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(sendResolution) object:nil];
+ [self performSelector:@selector(sendResolution) withObject:nil afterDelay:.3];
+}
+- (void)sendResolution {
+ if(!_input.connected)return;
+ CGRect r=[self contentRect];CGFloat sc=UIScreen.mainScreen.scale;
+ long w=((long)lround(r.size.width*sc))&~1L,h=((long)lround(r.size.height*sc))&~1L;   // pair : exigé par l'encodeur
+ if(w<320||h<320)return;
+ NSString *line=[NSString stringWithFormat:@"RES %ld %ld\n",w,h];
+ if([line isEqualToString:_lastRes])return;
+ _lastRes=line;[_input send:line];
 }
 // Rideau de rotation : dégradé de l'app + logo, le temps que Windows réorganise le bureau
 - (void)showCurtain {
@@ -2499,9 +2514,11 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [self layoutContent];
 }
 // Zone de l'image du PC : tout l'écran, moins la Touch Bar quand elle est dépliée (la barre des tâches reste visible)
+// La place de la barre reste réservée quand le clavier la masque : pas de changement de définition à chaque saisie
+- (BOOL)barReserved {return _bar&&[MPDefaults() boolForKey:@"touchBar"]&&!_bar.collapsed;}
 - (CGRect)contentRect {
  CGRect r=self.view.bounds;
- if(_bar&&!_bar.hidden&&!_bar.collapsed)r.size.height-=MPTouchBarHeight;
+ if([self barReserved])r.size.height-=MPTouchBarHeight;
  return r;
 }
 - (void)layoutContent {
@@ -2512,6 +2529,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [CATransaction commit];
  _touch.bounds=CGRectMake(0,0,r.size.width,r.size.height);_touch.center=CGPointMake(CGRectGetMidX(r),CGRectGetMidY(r));
  _bar.frame=CGRectMake(0,self.view.bounds.size.height-MPTouchBarHeight,self.view.bounds.size.width,MPTouchBarHeight);
+ [self scheduleResolution];   // barre repliée / dépliée, réglage changé, rotation : nouvelle taille pour le PC
 }
 - (void)enqueue:(CMSampleBufferRef)sb gen:(unsigned)gen {
  if(gen!=_decoderGen)return;   // image d'un flux précédent

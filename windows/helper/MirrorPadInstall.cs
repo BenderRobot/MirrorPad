@@ -94,7 +94,8 @@ namespace MirrorPadInstall
             var res = doc.SelectSingleNode("/vdd_settings/resolutions");
             if (res == null) return false;
             bool changed = false;
-            foreach (var wh in new[] { new[] { 2048, 1536 }, new[] { 1536, 2048 } })
+            // plein écran, et zone au-dessus de la Touch Bar (50 pt = 100 px)
+            foreach (var wh in new[] { new[] { 2048, 1536 }, new[] { 1536, 2048 }, new[] { 2048, 1436 }, new[] { 1536, 1948 } })
             {
                 bool has = res.SelectNodes("resolution").Cast<XmlNode>().Any(n =>
                     (n.SelectSingleNode("width") ?? n).InnerText.Trim() == wh[0].ToString() && (n.SelectSingleNode("height") ?? n).InnerText.Trim() == wh[1].ToString());

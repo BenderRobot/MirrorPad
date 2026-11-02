@@ -323,6 +323,7 @@ namespace MirrorPad
                     break;
                 case "P": if (p.Length >= 2 && Reply != null) Reply("P " + p[1]); break;
                 case "O": if (p.Length >= 2) SetOrientation(p[1] == "P"); break;
+                case "RES": { int rw, rh; if (p.Length >= 3 && int.TryParse(p[1], out rw) && int.TryParse(p[2], out rh)) RequestResolution(rw, rh); break; }
                 case "S":
                     int fps, mbps;
                     if (p.Length >= 3 && int.TryParse(p[1], out fps) && int.TryParse(p[2], out mbps) && (fps == 30 || fps == 60) && mbps >= 2 && mbps <= 50)
@@ -381,26 +382,52 @@ namespace MirrorPad
         void SetOrientation(bool portrait)
         {
             RefreshBounds();
+            var b = Bounds;
+            if ((b.Height > b.Width) == portrait) return;
+            ChangeResolution(b.Height, b.Width);
+        }
+
+        // « RES w h » : l'iPad demande la taille exacte de sa zone d'affichage (sans la Touch Bar),
+        // pour que l'image remplisse l'écran sans bandes noires
+        void RequestResolution(int w, int h)
+        {
+            var dev = TargetDevice;
+            if (string.IsNullOrEmpty(dev) || w < 320 || h < 320) return;
+            if (!Native.SupportsMode(dev, w, h))
+            {
+                Log.Write("mode " + w + "x" + h + " absent du pilote d'écran : menu MirrorPad > « Installer les composants manquants… »");
+                bool portrait = h > w;
+                // repli : bonne orientation dans la taille iPad complète
+                int fw = portrait ? 1536 : 2048, fh = portrait ? 2048 : 1536;
+                if (Native.SupportsMode(dev, fw, fh)) ChangeResolution(fw, fh); else SetOrientation(portrait);
+                return;
+            }
+            ChangeResolution(w, h);
+        }
+
+        void ChangeResolution(int w, int h)
+        {
+            RefreshBounds();
             var b = Bounds; var dev = TargetDevice;
-            if ((b.Height > b.Width) == portrait || string.IsNullOrEmpty(dev)) return;
+            if (string.IsNullOrEmpty(dev) || (b.Width == w && b.Height == h)) return;
             // on coupe l'image AVANT de basculer : l'iPad ne voit pas Windows réorganiser le bureau,
             // puis la capture reprend une fois le fond d'écran et les icônes en place
             if (HoldStream != null) HoldStream(1200);
-            int r = Native.SetResolution(dev, b.Height, b.Width);
+            int r = Native.SetResolution(dev, w, h);
             if (r == 0)
             {
-                Log.Write("écran virtuel en " + (portrait ? "portrait" : "paysage") + " (" + b.Height + "x" + b.Width + ")");
+                Log.Write("écran virtuel en " + w + "x" + h + (h > w ? " (portrait)" : " (paysage)"));
                 RefreshBounds();
                 if (Placed != null) Placed();
                 RefreshBounds();
                 if (HoldStream != null) HoldStream(6000);   // plafond : la capture reprend dès que le bureau est stable
                 var nb = Bounds;
-                if ((nb.Height > nb.Width) != portrait) nb = new Rectangle(nb.X, nb.Y, nb.Height, nb.Width);   // Windows pas encore à jour
+                if (nb.Width != w || nb.Height != h) nb = new Rectangle(nb.X, nb.Y, w, h);   // Windows pas encore à jour
                 int seq = Interlocked.Increment(ref rotSeq);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     int ms = WaitStable(nb, 5000);
-                    if (seq != rotSeq) return;   // une autre rotation a suivi : c'est elle qui relancera l'image
+                    if (seq != rotSeq) return;   // un autre changement a suivi : c'est lui qui relancera l'image
                     Log.Write("bureau stable après " + ms + " ms");
                     if (HoldStream != null) HoldStream(0);
                 });
@@ -408,7 +435,7 @@ namespace MirrorPad
             else
             {
                 if (HoldStream != null) HoldStream(0);
-                Log.Write("rotation impossible (code " + r + ") : lancez Ajouter-Portrait.ps1 en administrateur");
+                Log.Write("changement de résolution impossible (code " + r + ") : menu MirrorPad > « Installer les composants manquants… »");
             }
         }
     }

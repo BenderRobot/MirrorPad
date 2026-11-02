@@ -26,7 +26,7 @@ iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─�
 
 | Domaine | Ce que ça fait |
 |---|---|
-| **Écran** | Écran étendu 2048×1536, portrait / paysage selon l'iPad (rideau pendant la bascule), position à droite / gauche / au-dessus, retiré quand l'iPad se verrouille, rebranché à son retour |
+| **Écran** | Écran étendu 2048×1536 (2048×1436 avec la Touch Bar dépliée : pas de bandes noires), portrait / paysage selon l'iPad (rideau pendant la bascule), position à droite / gauche / au-dessus, retiré quand l'iPad se verrouille, rebranché à son retour |
 | **Fluidité** | Débit adaptatif (baisse si le Wi-Fi sature, remonte quand il se libère), tampon d'envoi court, encodage Quick Sync / NVENC / x264 faible latence, câble USB |
 | **Saisie** | Modes Souris, Tactile, Stylet (pression), Pavé tactile ; clavier de l'iPad ouvert automatiquement quand on touche une zone de saisie (UI Automation + règles pour les applis muettes comme WhatsApp) |
 | **Touch Bar** | Bande façon MacBook en bas de l'iPad, boutons selon l'appli active (Paint, Photoshop, PowerPoint, VS Code, navigateurs, Word, Excel, Explorateur, Teams, WhatsApp, lecteurs), repliable |
@@ -63,7 +63,7 @@ Chaque nouveau composant Windows = une nouvelle section de `windows/installer/Mi
 | Composant (case de l'installateur) | Contenu |
 |---|---|
 | MirrorPad | app + ffmpeg, menu Démarrer, démarrage avec Windows, désinstallation dans « Applications installées » |
-| Écran virtuel | Virtual Display Driver + `C:\VirtualDisplayDriver\vdd_settings.xml` (2048×1536 et 1536×2048) |
+| Écran virtuel | Virtual Display Driver + `C:\VirtualDisplayDriver\vdd_settings.xml` (2048×1536, 1536×2048 et les tailles avec Touch Bar 2048×1436, 1536×1948) |
 | Webcam | OBS Studio via winget (caméra « OBS Virtual Camera » : Teams, Zoom, navigateurs ; pas l'appli Caméra de Windows 10) |
 | Câble USB | service Apple Mobile Device seul, extrait de l'installateur officiel d'Apple (sans iTunes) |
 | Micro | VB-CABLE, téléchargé depuis vb-audio.com pendant l'installation |
@@ -121,7 +121,7 @@ Trames : `[type 1 octet][longueur 3 octets][données]`
 Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR <idIPad> <nom> <nonce>` → `OK` / `PAIRED <jeton>` / `ERR …`.
 
 Lignes iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `F id:x:y:d|m|u|c …`, `PD/PM x y pression [e]`, `PU`, `RM dx dy`, `CL`, `CR`,
-`DD/DU`, `KS combo`, `T texte`, `K BACK|ENTER`, `O P|L`, `P n`, `S fps mbps`, `SLEEP`, `CAM START w h fps|STOP`,
+`DD/DU`, `KS combo`, `T texte`, `K BACK|ENTER`, `RES largeur hauteur` (zone d'image sans la Touch Bar), `O P|L`, `P n`, `S fps mbps`, `SLEEP`, `CAM START w h fps|STOP`,
 `MIC START rate ch|STOP`, `SND START|STOP`, `DB START|STOP`, `WIN SWAP`, `CB texte`.
 
 Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q saturation% débit`, `SC …` (raccourcis),

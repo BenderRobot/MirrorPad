@@ -234,6 +234,15 @@ namespace MirrorPad
             return r;
         }
 
+        // le pilote d'écran propose-t-il ce mode (largeur x hauteur) ?
+        public static bool SupportsMode(string device, int w, int h)
+        {
+            var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+            for (int i = 0; EnumDisplaySettings(device, i, ref dm); i++)
+                if (dm.dmPelsWidth == w && dm.dmPelsHeight == h) return true;
+            return false;
+        }
+
         public static int SetResolution(string device, int w, int h)
         {
             var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
