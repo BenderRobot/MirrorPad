@@ -8,7 +8,7 @@ mcs -target:winexe -out:MirrorPad.exe -langversion:7 -optimize+ -nostdlib -nocon
   -r:$REF/mscorlib.dll -r:$REF/System.dll -r:$REF/System.Core.dll -r:$REF/System.Drawing.dll \
   -r:$REF/System.Windows.Forms.dll -r:$REF/System.Runtime.Serialization.dll -r:$REF/System.Security.dll \
   -r:$REF/System.IO.Compression.dll -r:$REF/System.IO.Compression.FileSystem.dll -r:$REF/Microsoft.CSharp.dll \
-  -r:$REF/System.Xml.dll -r:$REF/Facades/System.Runtime.dll \
+  -r:$REF/System.Xml.dll -r:$REF/System.ServiceProcess.dll -r:$REF/Facades/System.Runtime.dll \
   src/*.cs
 echo "BUILD_OK MirrorPad.exe"
 

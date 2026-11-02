@@ -29,6 +29,7 @@ namespace MirrorPad
     {
         readonly Config cfg;
         CheckBox disc, auto, sleep, clip, usb; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc, side; ListBox paired;
+        public Action InstallMissing;   // télécharge et lance MirrorPad-Setup.exe
         static readonly string[] SideKeys = { "right", "left", "above", "" };
         readonly string[] encKeys;
 
@@ -54,12 +55,17 @@ namespace MirrorPad
             string[] parts = {
                 Check(Screen.AllScreens.Length > 1 || !string.IsNullOrEmpty(c.VirtualDevice)) + " Écran virtuel",
                 Check(Safe(CameraBridge.ObsCameraInstalled)) + " Webcam (OBS)",
-                Check(Safe(() => MicPlayer.FindCable() >= 0)) + " Micro (VB-CABLE)" };
+                Check(Safe(() => MicPlayer.FindCable() >= 0)) + " Micro",
+                Check(Safe(UsbServiceInstalled)) + " USB" };
             head.Controls.Add(new Label { Text = string.Join("     ", parts), ForeColor = Color.White, BackColor = Color.Transparent, Location = new Point(18, 78), Size = new Size(390, 22) });
             var log = new Button { Text = "Ouvrir le journal", FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(80, 120, 255), Location = new Point(18, 108), Size = new Size(150, 30) };
             log.FlatAppearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
             log.Click += (s, e) => { try { System.Diagnostics.Process.Start(Log.FilePath); } catch { } };
             head.Controls.Add(log);
+            var fix = new Button { Text = "Installer les composants manquants", FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(80, 120, 255), Location = new Point(176, 108), Size = new Size(228, 30) };
+            fix.FlatAppearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+            fix.Click += (s, e) => { if (InstallMissing != null) { InstallMissing(); Close(); } };
+            head.Controls.Add(fix);
             Controls.Add(head);
             int y = 166;
             disc = new CheckBox { Text = "Trouver l'iPad automatiquement", Checked = c.AutoDiscover, Location = new Point(16, y), AutoSize = true }; Controls.Add(disc); y += 32;
@@ -99,6 +105,11 @@ namespace MirrorPad
         }
 
         static string Check(bool ok) { return ok ? "✔" : "✖"; }
+        public static bool UsbServiceInstalled()
+        {
+            return System.ServiceProcess.ServiceController.GetServices().Any(x => x.ServiceName.IndexOf("Apple Mobile Device", StringComparison.OrdinalIgnoreCase) >= 0
+                                                                              || x.DisplayName.IndexOf("Apple Mobile Device", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
         static bool Safe(Func<bool> f) { try { return f(); } catch { return false; } }
 
         void Row(string label, Control ctrl, ref int y)

@@ -138,7 +138,7 @@ namespace MirrorPad
             m.Items.AddRange(new ToolStripItem[] {
                 statusItem, versionItem, new ToolStripSeparator(), toggleItem,
                 new ToolStripMenuItem("Repérer les écrans…", null, (s, e) => FindScreens()),
-                new ToolStripMenuItem("Installer la webcam et le micro…", null, (s, e) => InstallDrivers()),
+                new ToolStripMenuItem("Installer les composants manquants…", null, (s, e) => InstallDrivers()),
                 new ToolStripMenuItem("Paramètres…", null, (s, e) => ShowSettings()),
                 touchItem, startupItem, adminItem,
                 new ToolStripMenuItem("Rechercher une mise à jour", null, (s, e) => ThreadPool.QueueUserWorkItem(_ => CheckUpdate(true))),
@@ -349,10 +349,33 @@ namespace MirrorPad
             }
         }
 
-        // Les pilotes webcam / micro s'installent avec MirrorPad-Setup.exe (cases « Webcam » et « Micro »)
+        // Tous les composants Windows (écran virtuel, webcam, micro, câble USB…) s'installent par MirrorPad-Setup.exe :
+        // on télécharge celui de la dernière version et on le lance (il ne réinstalle que ce qui manque).
         void InstallDrivers()
         {
-            Balloon("Relancez MirrorPad-Setup.exe et laissez cochées « Webcam » et « Micro ». Vos réglages sont conservés.", ToolTipIcon.Info);
+            Balloon("Téléchargement de l'installateur MirrorPad…", ToolTipIcon.Info);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var json = HttpGet("https://api.github.com/repos/" + cfg.UpdateRepo + "/releases/latest", false, null);
+                    GhRelease rel;
+                    using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                        rel = (GhRelease)new DataContractJsonSerializer(typeof(GhRelease)).ReadObject(ms);
+                    var asset = (rel.assets ?? new GhAsset[0]).FirstOrDefault(a => a.name == "MirrorPad-Setup.exe");
+                    if (asset == null) throw new Exception("installateur absent de la version " + rel.tag_name);
+                    var exe = Path.Combine(Path.GetTempPath(), "MirrorPad-Setup.exe");
+                    if (string.IsNullOrEmpty(cfg.GitHubToken)) HttpGet(asset.browser_download_url, true, exe);
+                    else HttpGet(asset.url, true, exe);
+                    Log.Write("installateur " + rel.tag_name + " téléchargé, lancement");
+                    Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, Verb = "runas" });
+                }
+                catch (Exception e)
+                {
+                    Log.Write("installateur : " + e.Message);
+                    Post(() => Balloon("Impossible de lancer l'installateur : " + e.Message, ToolTipIcon.Error));
+                }
+            });
         }
 
         // ---------- capteurs de l'iPad ----------
@@ -407,7 +430,7 @@ namespace MirrorPad
         // ---------- fenêtres ----------
         void ShowSettings()
         {
-            using (var f = new SettingsForm(cfg, localVersion, statusItem.Text))
+            using (var f = new SettingsForm(cfg, localVersion, statusItem.Text) { InstallMissing = InstallDrivers })
             {
                 if (f.ShowDialog() == DialogResult.OK && f.Apply())
                 {
