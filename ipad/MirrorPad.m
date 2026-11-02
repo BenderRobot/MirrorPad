@@ -1815,9 +1815,9 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  unsigned rg=++_rotGen;
  [_curtain.layer removeAllAnimations];
  [UIView animateWithDuration:.16 animations:^{self->_curtain.alpha=1;}];
- // sécurité : si le PC ne bascule pas (portrait non installé…), on rend la main après 5 s
+ // sécurité : si le PC ne bascule pas (portrait non installé…), on rend la main après 8 s
  __weak typeof(self) w=self;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(8*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
   typeof(self) s=w;if(s&&s->_rotGen==rg&&s->_rotating)[s hideCurtain];
  });
 }

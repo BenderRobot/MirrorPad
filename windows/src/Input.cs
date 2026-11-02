@@ -1,6 +1,9 @@
 // Rejoue sur Windows les gestes et la frappe reçus de l'iPad.
 using System;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
@@ -13,6 +16,7 @@ namespace MirrorPad
         public volatile string TargetDevice = "";   // \\.\DISPLAYn de l'écran virtuel ("" = écran principal, jamais pivoté)
         Rectangle bounds = Screen.PrimaryScreen.Bounds;
         bool leftDown;
+        int rotSeq;                                 // numéro de la dernière rotation (rotations rapprochées)
         public Action<string> Reply;                // envoi d'une ligne à l'iPad
         public Action RestartStream;                // relancer ffmpeg (rotation, qualité)
         public Action<int> HoldStream;              // couper ffmpeg et attendre n ms avant de le relancer (rotation)
@@ -175,6 +179,49 @@ namespace MirrorPad
             }
         }
 
+        // Attend que Windows ait fini de redessiner l'écran (fond d'écran, icônes, barre des tâches) :
+        // on compare une empreinte de l'image toutes les 150 ms ; stable = identique pendant 600 ms.
+        static int WaitStable(Rectangle b, int maxMs)
+        {
+            var t0 = DateTime.Now; long last = 0; DateTime? since = null;
+            while (true)
+            {
+                int el = (int)(DateTime.Now - t0).TotalMilliseconds;
+                if (el >= maxMs) return el;
+                long sig = Signature(b);
+                if (sig != 0 && sig == last)
+                {
+                    if (since == null) since = DateTime.Now;
+                    if ((DateTime.Now - since.Value).TotalMilliseconds >= 600 && el >= 800) return el;
+                }
+                else since = null;
+                last = sig;
+                Thread.Sleep(150);
+            }
+        }
+
+        static long Signature(Rectangle b)
+        {
+            try
+            {
+                using (var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppRgb))
+                {
+                    using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
+                    var d = bmp.LockBits(new Rectangle(0, 0, b.Width, b.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
+                    try
+                    {
+                        long h = 17; int sx = Math.Max(1, b.Width / 48), sy = Math.Max(1, b.Height / 48);
+                        for (int y = sy / 2; y < b.Height; y += sy)
+                            for (int x = sx / 2; x < b.Width; x += sx)
+                                h = h * 31 + (Marshal.ReadInt32(d.Scan0, y * d.Stride + x * 4) & 0xFFFFFF);
+                        return h == 0 ? 1 : h;
+                    }
+                    finally { bmp.UnlockBits(d); }
+                }
+            }
+            catch { return 0; }   // capture impossible pendant la bascule : pas encore stable
+        }
+
         void SetOrientation(bool portrait)
         {
             RefreshBounds();
@@ -188,7 +235,17 @@ namespace MirrorPad
             {
                 Log.Write("écran virtuel en " + (portrait ? "portrait" : "paysage") + " (" + b.Height + "x" + b.Width + ")");
                 RefreshBounds();
-                if (HoldStream != null) HoldStream(1000);   // délai compté à partir de la bascule effective
+                if (HoldStream != null) HoldStream(6000);   // plafond : la capture reprend dès que le bureau est stable
+                var nb = Bounds;
+                if ((nb.Height > nb.Width) != portrait) nb = new Rectangle(nb.X, nb.Y, nb.Height, nb.Width);   // Windows pas encore à jour
+                int seq = Interlocked.Increment(ref rotSeq);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    int ms = WaitStable(nb, 5000);
+                    if (seq != rotSeq) return;   // une autre rotation a suivi : c'est elle qui relancera l'image
+                    Log.Write("bureau stable après " + ms + " ms");
+                    if (HoldStream != null) HoldStream(0);
+                });
             }
             else
             {
