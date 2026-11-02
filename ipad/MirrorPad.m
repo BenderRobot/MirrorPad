@@ -433,7 +433,8 @@ done:
 @end
 @implementation MPTouchView {
  NSMutableDictionary<NSValue*,NSNumber*> *_ids;   // doigt -> numéro de contact (tactile natif)
- BOOL _quad,_quadMoved;     // tactile natif : 4 doigts posés = geste réservé à l'iPad (réglages)
+ BOOL _quad,_quadMoved;     // tactile natif : 3 ou 4 doigts posés = geste réservé à l'iPad (clavier, fenêtre, réglages)
+ NSUInteger _quadFingers;
  int _mode;                 // 0 rien, 1 un doigt, 2 deux doigts, 3 trois doigts
  BOOL _dragging,_moved,_longFired,_decided,_pinching;
  __weak UITouch *_primary;
@@ -554,7 +555,8 @@ static const CGFloat MPScrollGain=2.4;
  [self stopInertia];
  if(_inputMode==1){
   NSArray *all=[self active:e];
-  if(all.count>=4&&!_quad){[self cancelNative:e];_quad=YES;_quadMoved=NO;_centroidStart=[self centroid:all];}
+  if(all.count>=3&&!_quad){[self cancelNative:e];_quad=YES;_quadMoved=NO;_quadFingers=0;_centroidStart=_centroid=[self centroid:all];}
+  if(_quad)_quadFingers=MAX(_quadFingers,all.count);
   if(!_quad)[self touchFrame:e];
   return;
  }
@@ -580,7 +582,7 @@ static const CGFloat MPScrollGain=2.4;
  if(_inputMode==1){
   if(_quad){
    NSArray *all=[self active:e];
-   if(all.count>=3){CGPoint c=[self centroid:all];if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>40)_quadMoved=YES;}
+   if(all.count>=3){CGPoint c=[self centroid:all];_centroid=c;if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>40)_quadMoved=YES;}
    return;
   }
   [self touchFrame:e];return;
@@ -620,8 +622,15 @@ static const CGFloat MPScrollGain=2.4;
 - (void)finish:(UIEvent*)e cancelled:(BOOL)cancelled {
  if(_inputMode==1){
   if(_quad){
-   // 4 doigts : on attend qu'ils soient tous levés ; un simple appui (sans glisser) ouvre les réglages
-   if([self active:e].count==0){BOOL fire=!_quadMoved&&!cancelled;_quad=NO;if(fire&&self.onFourFingerTap)self.onFourFingerTap();}
+   // 3 / 4 doigts : on attend qu'ils soient tous levés, puis on décide du geste
+   if([self active:e].count==0){
+    _quad=NO;
+    if(cancelled)return;
+    CGFloat up=_centroidStart.y-_centroid.y,side=fabs(_centroid.x-_centroidStart.x);
+    if(_quadFingers>=4){if(!_quadMoved&&self.onFourFingerTap)self.onFourFingerTap();}   // appui 4 doigts : réglages
+    else if(_quadMoved&&up>90&&side<up){if(self.onThreeFingerSwipeUp)self.onThreeFingerSwipeUp();}   // 3 doigts vers le haut : fenêtre ⇄ iPad
+    else if(!_quadMoved){[self ripple:_centroidStart color:UIColor.whiteColor];if(self.isFirstResponder)[self resignFirstResponder];else [self becomeFirstResponder];}   // appui 3 doigts : clavier
+   }
    return;
   }
   [self touchFrame:e];return;
