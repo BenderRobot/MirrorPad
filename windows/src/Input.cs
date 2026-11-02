@@ -19,6 +19,7 @@ namespace MirrorPad
         int rotSeq;                                 // numéro de la dernière rotation (rotations rapprochées)
         public Action<string> Reply;                // envoi d'une ligne à l'iPad
         public Action RestartStream;                // relancer ffmpeg (rotation, qualité)
+        public Action Placed;                       // après une rotation : replacer l'écran (gauche / droite / dessus)
         public Action<int> HoldStream;              // couper ffmpeg et attendre n ms avant de le relancer (rotation)
         public Action Sleep;                        // l'iPad se verrouille
         public Action<string[]> Media;              // CAM / MIC / CB : traités par l'application
@@ -85,8 +86,11 @@ namespace MirrorPad
             });
         }
 
-        // Émulation souris du tactile : 1 doigt = clic / glisser, 2 doigts = défilement
-        uint? emuPrimary; double emuLastCy = double.NaN; int emuWheelAcc;
+        // Émulation souris du tactile : 1 doigt = clic / glisser (appui long = clic droit),
+        // 2 doigts = défilement ou zoom (pincer), comme un pavé tactile
+        uint? emuPrimary; double emuLastCy = double.NaN, emuLastSpread = double.NaN; int emuWheelAcc, emuZoomAcc;
+        int emuDownX, emuDownY, emuLastX, emuLastY; DateTime emuDownAt; bool emuDragging, emuLongDone, emuTwo;
+        System.Threading.Timer emuLongTimer;
         void EmulateTouch(string[] p)
         {
             var pts = new System.Collections.Generic.List<Tuple<uint, int, int, string>>();
@@ -99,33 +103,81 @@ namespace MirrorPad
             var active = pts.Where(t => t.Item4 == "d" || t.Item4 == "m").ToList();
             if (active.Count >= 2)
             {
+                CancelLong();
                 if (leftDown) ReleaseLeft();
-                emuPrimary = null;
-                double cy = active.Take(2).Average(t => t.Item3);
+                emuPrimary = null; emuTwo = true;
+                double cy = (active[0].Item3 + active[1].Item3) / 2.0;
+                double spread = Math.Sqrt(Math.Pow(active[0].Item2 - active[1].Item2, 2) + Math.Pow(active[0].Item3 - active[1].Item3, 2));
                 if (!double.IsNaN(emuLastCy))
                 {
-                    emuWheelAcc += (int)Math.Round((cy - emuLastCy) * 3);
-                    int steps = emuWheelAcc / 40;
-                    if (steps != 0) { Native.mouse_event(Native.Wheel, 0, 0, steps * 40, UIntPtr.Zero); emuWheelAcc -= steps * 40; }
+                    double dSpread = spread - emuLastSpread, dy = cy - emuLastCy;
+                    if (Math.Abs(dSpread) > Math.Abs(dy) * 1.5)
+                    {
+                        // pincer : Ctrl + molette (un cran tous les 60 px d'écartement)
+                        emuZoomAcc += (int)Math.Round(dSpread);
+                        int z = emuZoomAcc / 60;
+                        if (z != 0) { Native.Zoom(z); emuZoomAcc -= z * 60; }
+                    }
+                    else
+                    {
+                        emuWheelAcc += (int)Math.Round(dy * 3);
+                        int steps = emuWheelAcc / 40;
+                        if (steps != 0) { Native.mouse_event(Native.Wheel, 0, 0, steps * 40, UIntPtr.Zero); emuWheelAcc -= steps * 40; }
+                    }
                 }
-                emuLastCy = cy;
+                emuLastCy = cy; emuLastSpread = spread;
                 return;
             }
-            emuLastCy = double.NaN; emuWheelAcc = 0;
+            emuLastCy = double.NaN; emuLastSpread = double.NaN; emuWheelAcc = 0; emuZoomAcc = 0;
+            if (active.Count == 0) emuTwo = false;
+            if (emuTwo) return;   // on attend que tous les doigts soient levés après un geste à deux doigts
             foreach (var t in pts)
             {
-                if (emuPrimary == null && t.Item4 == "d" && active.Count == 1)
+                if (emuPrimary == null && t.Item4 == "d")
                 {
-                    emuPrimary = t.Item1; Native.MoveTo(t.Item2, t.Item3);
-                    Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true;
+                    // le bouton n'est enfoncé qu'au premier déplacement : un appui long peut encore devenir un clic droit
+                    emuPrimary = t.Item1; emuDownX = emuLastX = t.Item2; emuDownY = emuLastY = t.Item3; emuDownAt = DateTime.Now;
+                    emuDragging = false; emuLongDone = false;
+                    Native.MoveTo(t.Item2, t.Item3);
+                    CancelLong();
+                    emuLongTimer = new System.Threading.Timer(_ => LongPress(), null, 550, System.Threading.Timeout.Infinite);
                 }
                 else if (emuPrimary == t.Item1)
                 {
-                    Native.MoveTo(t.Item2, t.Item3);
-                    if (t.Item4 == "u" || t.Item4 == "c") { ReleaseLeft(); emuPrimary = null; }
+                    emuLastX = t.Item2; emuLastY = t.Item3;
+                    bool far = Math.Abs(t.Item2 - emuDownX) > 10 || Math.Abs(t.Item3 - emuDownY) > 10;
+                    if (!emuDragging && !emuLongDone && far)
+                    {
+                        CancelLong(); emuDragging = true;
+                        Native.MoveTo(emuDownX, emuDownY);
+                        Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero); leftDown = true;
+                    }
+                    if (emuDragging) Native.MoveTo(t.Item2, t.Item3);
+                    if (t.Item4 == "u" || t.Item4 == "c")
+                    {
+                        CancelLong();
+                        if (emuDragging) ReleaseLeft();
+                        else if (!emuLongDone && t.Item4 == "u")
+                        {
+                            Native.MoveTo(emuDownX, emuDownY);
+                            Native.mouse_event(Native.LeftDown, 0, 0, 0, UIntPtr.Zero);
+                            Native.mouse_event(Native.LeftUp, 0, 0, 0, UIntPtr.Zero);
+                        }
+                        emuPrimary = null; emuDragging = false;
+                    }
                 }
             }
         }
+        void CancelLong() { var t = emuLongTimer; emuLongTimer = null; if (t != null) t.Dispose(); }
+        void LongPress()
+        {
+            if (emuPrimary == null || emuDragging || emuLongDone) return;
+            emuLongDone = true;
+            Native.MoveTo(emuDownX, emuDownY);
+            Native.mouse_event(Native.RightDown, 0, 0, 0, UIntPtr.Zero);
+            Native.mouse_event(Native.RightUp, 0, 0, 0, UIntPtr.Zero);
+        }
+
         public void ResetDiagnostics() { touchSeen = penSeen = touchWarned = penWarned = false; }
 
         // ---- Stylet : « PD x y pression [e] », « PM … », « PU x y » (e = gomme)
@@ -305,6 +357,8 @@ namespace MirrorPad
             if (r == 0)
             {
                 Log.Write("écran virtuel en " + (portrait ? "portrait" : "paysage") + " (" + b.Height + "x" + b.Width + ")");
+                RefreshBounds();
+                if (Placed != null) Placed();
                 RefreshBounds();
                 if (HoldStream != null) HoldStream(6000);   // plafond : la capture reprend dès que le bureau est stable
                 var nb = Bounds;

@@ -52,7 +52,9 @@ namespace MirrorPad
         [DataMember] public bool ShareClipboard;         // presse-papiers partagé avec l'iPad          // débrancher l'écran virtuel quand l'iPad est verrouillé / absent
         [DataMember] public string VirtualDevice;        // écran virtuel mémorisé pour le rebrancher (\\.\DISPLAYn)
         [DataMember] public int VirtualX, VirtualY, VirtualW, VirtualH;
-        [DataMember] public bool VirtualDetached;   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
+        [DataMember] public bool VirtualDetached;
+        [DataMember] public string ScreenSide;     // position de l'écran de l'iPad : "" (ne pas toucher), left, right, above
+        [DataMember] public bool PreferUsb;        // passer par le câble USB quand l'iPad est branché   // boutons de l'écran « Raccourcis » de l'iPad (modifiables ici)
 
         public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MirrorPad");
         static string FilePath { get { return Path.Combine(Dir, "config.json"); } }
@@ -70,6 +72,7 @@ namespace MirrorPad
             Paired = new List<PairedDevice>();
             Shortcuts = null;
             SleepWithIPad = true; ShareClipboard = true; VirtualDevice = ""; VirtualDetached = false;
+            ScreenSide = "right"; PreferUsb = true;
         }
 
         public static List<Shortcut> DefaultShortcuts()

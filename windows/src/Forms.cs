@@ -28,16 +28,40 @@ namespace MirrorPad
     public class SettingsForm : Form
     {
         readonly Config cfg;
-        CheckBox disc, auto, sleep, clip; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc; ListBox paired;
+        CheckBox disc, auto, sleep, clip, usb; TextBox ip; NumericUpDown output, mbps; ComboBox fps, enc, side; ListBox paired;
+        static readonly string[] SideKeys = { "right", "left", "above", "" };
         readonly string[] encKeys;
 
-        public SettingsForm(Config c)
+        public SettingsForm(Config c, string version = "", string status = "")
         {
             cfg = c;
             Text = "MirrorPad – Paramètres"; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen; TopMost = true; Font = new Font("Segoe UI", 10);
             ClientSize = new Size(420, 470); AutoScaleMode = AutoScaleMode.Dpi;
-            int y = 16;
+            // bandeau aux couleurs de l'app : version, état de la connexion, composants installés
+            var head = new Panel { Location = new Point(0, 0), Size = new Size(420, 150), BackColor = Color.FromArgb(27, 30, 110) };
+            // dégradé dessiné une fois en image de fond (les libellés transparents le laissent voir)
+            var bg = new Bitmap(420, 150);
+            using (var g = Graphics.FromImage(bg))
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(new Rectangle(0, 0, 420, 150), Color.Black, Color.Black, 20f))
+            {
+                br.InterpolationColors = new System.Drawing.Drawing2D.ColorBlend { Positions = new[] { 0f, .5f, 1f }, Colors = new[] { Color.FromArgb(22, 198, 255), Color.FromArgb(59, 91, 255), Color.FromArgb(122, 46, 246) } };
+                g.FillRectangle(br, 0, 0, 420, 150);
+            }
+            head.BackgroundImage = bg; head.BackgroundImageLayout = ImageLayout.Stretch;
+            head.Controls.Add(new Label { Text = "MirrorPad", Font = new Font("Segoe UI Semibold", 18), ForeColor = Color.White, BackColor = Color.Transparent, Location = new Point(16, 10), AutoSize = true });
+            head.Controls.Add(new Label { Text = (version.Length > 0 ? "Version " + version + "  ·  " : "") + status, ForeColor = Color.FromArgb(235, 240, 255), BackColor = Color.Transparent, Location = new Point(18, 48), Size = new Size(390, 22) });
+            string[] parts = {
+                Check(Screen.AllScreens.Length > 1 || !string.IsNullOrEmpty(c.VirtualDevice)) + " Écran virtuel",
+                Check(Safe(CameraBridge.ObsCameraInstalled)) + " Webcam (OBS)",
+                Check(Safe(() => MicPlayer.FindCable() >= 0)) + " Micro (VB-CABLE)" };
+            head.Controls.Add(new Label { Text = string.Join("     ", parts), ForeColor = Color.White, BackColor = Color.Transparent, Location = new Point(18, 78), Size = new Size(390, 22) });
+            var log = new Button { Text = "Ouvrir le journal", FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(80, 120, 255), Location = new Point(18, 108), Size = new Size(150, 30) };
+            log.FlatAppearance.BorderColor = Color.FromArgb(200, 255, 255, 255);
+            log.Click += (s, e) => { try { System.Diagnostics.Process.Start(Log.FilePath); } catch { } };
+            head.Controls.Add(log);
+            Controls.Add(head);
+            int y = 166;
             disc = new CheckBox { Text = "Trouver l'iPad automatiquement", Checked = c.AutoDiscover, Location = new Point(16, y), AutoSize = true }; Controls.Add(disc); y += 32;
             ip = new TextBox { Text = c.IPad }; Row("Adresse de l'iPad", ip, ref y);
             output = new NumericUpDown { Minimum = 0, Maximum = 9, Value = c.Output }; Row("Numéro d'écran", output, ref y);
@@ -48,6 +72,10 @@ namespace MirrorPad
             enc.Items.Add("Automatique" + (string.IsNullOrEmpty(c.DetectedEncoder) ? "" : " (" + Streamer.EncoderNames[c.DetectedEncoder] + ")"));
             foreach (var k in Streamer.EncoderOrder) enc.Items.Add(Streamer.EncoderNames[k]);
             enc.SelectedIndex = Math.Max(0, Array.IndexOf(encKeys, c.Encoder)); Row("Encodage", enc, ref y);
+            side = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+            side.Items.AddRange(new object[] { "À droite", "À gauche", "Au-dessus", "Ne pas changer" });
+            side.SelectedIndex = Math.Max(0, Array.IndexOf(SideKeys, c.ScreenSide ?? "")); Row("Position de l'iPad", side, ref y);
+            usb = new CheckBox { Text = "Utiliser le câble USB quand l'iPad est branché", Checked = c.PreferUsb, Location = new Point(16, y), AutoSize = true }; Controls.Add(usb); y += 30;
             auto = new CheckBox { Text = "Se connecter au lancement", Checked = c.AutoConnect, Location = new Point(16, y), AutoSize = true }; Controls.Add(auto); y += 30;
             sleep = new CheckBox { Text = "Retirer l'écran virtuel quand l'iPad est verrouillé", Checked = c.SleepWithIPad, Location = new Point(16, y), AutoSize = true }; Controls.Add(sleep); y += 30;
             clip = new CheckBox { Text = "Partager le presse-papiers avec l'iPad", Checked = c.ShareClipboard, Location = new Point(16, y), AutoSize = true }; Controls.Add(clip); y += 40;
@@ -70,6 +98,9 @@ namespace MirrorPad
             ClientSize = new Size(420, y + 48);
         }
 
+        static string Check(bool ok) { return ok ? "✔" : "✖"; }
+        static bool Safe(Func<bool> f) { try { return f(); } catch { return false; } }
+
         void Row(string label, Control ctrl, ref int y)
         {
             Controls.Add(new Label { Text = label, Location = new Point(16, y + 4), AutoSize = true });
@@ -87,6 +118,7 @@ namespace MirrorPad
             cfg.AutoDiscover = disc.Checked; cfg.IPad = ip.Text.Trim(); cfg.Output = (int)output.Value;
             cfg.Fps = int.Parse((string)fps.SelectedItem); cfg.Mbps = (int)mbps.Value;
             cfg.Encoder = encKeys[enc.SelectedIndex]; cfg.DetectedEncoder = ""; cfg.AutoConnect = auto.Checked; cfg.SleepWithIPad = sleep.Checked; cfg.ShareClipboard = clip.Checked;
+            cfg.ScreenSide = SideKeys[Math.Max(0, side.SelectedIndex)]; cfg.PreferUsb = usb.Checked;
             cfg.Save();
             return true;
         }

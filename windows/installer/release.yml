@@ -45,6 +45,15 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q mono-devel nsis
       - name: Compiler MirrorPad.exe
         run: sh windows/build.sh
+      - name: Signer les exe (Azure Trusted Signing, si configuré)
+        env:
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: sh windows/sign.sh windows/MirrorPad.exe windows/installer/MirrorPadInstall.exe
       - name: Emballer
         run: |
           echo "$VERSION" > windows/version.txt
@@ -63,6 +72,15 @@ jobs:
           cd windows/installer
           makensis -V3 -DVERSION="$VERSION" MirrorPad.nsi
           mv MirrorPad-Setup.exe ../../
+      - name: Signer l'installateur (si configuré)
+        env:
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: sh windows/sign.sh MirrorPad-Setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows

@@ -46,10 +46,22 @@ namespace MirrorPad
             var ar = s.tcp.BeginConnect(host, Config.Port, null, null);
             if (!ar.AsyncWaitHandle.WaitOne(timeoutMs)) { s.tcp.Close(); throw new IOException("iPad injoignable"); }
             s.tcp.EndConnect(ar);
-            s.tcp.ReceiveTimeout = 15000;   // l'iPad envoie une mesure de latence chaque seconde
-            s.ssl = new SslStream(s.tcp.GetStream(), false);
-            s.ssl.AuthenticateAsServer(Identity.Certificate, false, SslProtocols.Tls12, false);
-            return s;
+            return s.Secure();
+        }
+
+        // Même chose sur un tunnel déjà ouvert (câble USB)
+        public static Session Over(TcpClient tunnel, string label, Config cfg)
+        {
+            var s = new Session { Host = label, Config = cfg, tcp = tunnel };
+            return s.Secure();
+        }
+
+        Session Secure()
+        {
+            tcp.ReceiveTimeout = 15000;   // l'iPad envoie une mesure de latence chaque seconde
+            ssl = new SslStream(tcp.GetStream(), false);
+            ssl.AuthenticateAsServer(Identity.Certificate, false, SslProtocols.Tls12, false);
+            return this;
         }
 
         // Poignée de main + appairage ; renvoie true si l'iPad est authentifié

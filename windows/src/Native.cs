@@ -221,6 +221,17 @@ namespace MirrorPad
         }
 
         // 0 = succès, -2 = définition non proposée par le pilote
+        // Place un écran à une position du bureau étendu (coin haut-gauche, en pixels)
+        public static int SetPosition(string device, int x, int y)
+        {
+            var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+            if (!EnumDisplaySettings(device, -1, ref dm)) return -100;
+            dm.dmFields = DM_POSITION; dm.dmPositionX = x; dm.dmPositionY = y;
+            int r = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+            ApplyDisplaySettings(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+            return r;
+        }
+
         public static int SetResolution(string device, int w, int h)
         {
             var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));

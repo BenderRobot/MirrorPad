@@ -7,6 +7,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Security.Principal;
@@ -35,6 +36,7 @@ namespace MirrorPad
         readonly string localVersion;
         readonly string ffmpeg;
         volatile bool wanted;
+        string lastRoute = "";
         volatile bool restartRequested;   // ffmpeg arrêté exprès (rotation, qualité) : pas un échec
         DateTime holdUntil = DateTime.MinValue;   // pas de capture avant cette heure (bureau en cours de réorganisation)
         volatile Session session;
@@ -64,6 +66,7 @@ namespace MirrorPad
             input = new InputHandler(cfg);
             input.RefreshBounds();
             input.RestartStream = () => { restartRequested = true; streamer.Stop(); };
+            input.Placed = PlaceVirtual;
             input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
             input.Sleep = () => { Log.Write("iPad verrouillé"); lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
@@ -217,7 +220,14 @@ namespace MirrorPad
                 Session s = null;
                 try
                 {
-                    s = Session.Connect(cfg.IPad, cfg, 3000);
+                    // câble USB d'abord (si l'iPad est branché et le service Apple présent), sinon Wi-Fi
+                    TcpClient usb = cfg.PreferUsb ? Usbmux.Connect(Config.Port, 1500) : null;
+                    if (usb != null)
+                    {
+                        try { s = Session.Over(usb, "USB", cfg); }
+                        catch { usb.Close(); s = null; }
+                    }
+                    if (s == null) s = Session.Connect(cfg.IPad, cfg, 3000);
                     s.AskPairing = AskPairing;
                     if (!s.Handshake()) { s.Close(); Thread.Sleep(5000); continue; }
                 }
@@ -230,9 +240,11 @@ namespace MirrorPad
                     continue;
                 }
                 fails = 0;
+                if (s.Host != lastRoute) { Log.Write("connexion par " + (s.Host == "USB" ? "câble USB" : "Wi-Fi (" + s.Host + ")")); lastRoute = s.Host; }
                 session = s;              // la session compte comme « vivante » dès maintenant…
                 lastAlive = DateTime.Now; // …pour que la règle des 20 s ne retire pas l'écran pendant qu'on le rebranche
                 WakeVirtual();   // l'écran virtuel revient avant l'image
+                PlaceVirtual();
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
@@ -261,6 +273,33 @@ namespace MirrorPad
         }
 
         // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
+        // Place l'écran de l'iPad à gauche, à droite ou au-dessus de l'écran principal (réglage « Position »)
+        void PlaceVirtual()
+        {
+            var side = cfg.ScreenSide ?? "";
+            if (side == "") return;
+            lock (displayLock)
+            {
+                input.RefreshBounds();
+                var dev = input.TargetDevice;
+                int x, y, w, h;
+                if (string.IsNullOrEmpty(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
+                var main = Screen.PrimaryScreen.Bounds;
+                int nx, ny;
+                switch (side)
+                {
+                    case "left": nx = main.Left - w; ny = main.Top + (main.Height - h) / 2; break;
+                    case "above": nx = main.Left + (main.Width - w) / 2; ny = main.Top - h; break;
+                    default: nx = main.Right; ny = main.Top + (main.Height - h) / 2; break;
+                }
+                if (nx == x && ny == y) return;
+                int r = Native.SetPosition(dev, nx, ny);
+                Log.Write(r == 0 ? "écran de l'iPad placé " + (side == "left" ? "à gauche" : side == "above" ? "au-dessus" : "à droite") + " (" + nx + "," + ny + ")"
+                                 : "impossible de placer l'écran de l'iPad (code " + r + ")");
+                input.RefreshBounds();
+            }
+        }
+
         void SleepVirtual(bool onlyIfAbsent = false)
         {
             if (!cfg.SleepWithIPad) return;
@@ -368,7 +407,7 @@ namespace MirrorPad
         // ---------- fenêtres ----------
         void ShowSettings()
         {
-            using (var f = new SettingsForm(cfg))
+            using (var f = new SettingsForm(cfg, localVersion, statusItem.Text))
             {
                 if (f.ShowDialog() == DialogResult.OK && f.Apply())
                 {
