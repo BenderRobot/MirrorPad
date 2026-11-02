@@ -14,13 +14,14 @@ namespace MirrorPad
         static Mutex mutex;
 
         [STAThread]
-        static void Main()
+        static int Main(string[] args)
         {
+            if (Setup.IsSetupCommand(args)) return Setup.Run(args);   // appelé par MirrorPad-Setup.exe
             mutex = new Mutex(false, @"Local\MirrorPadSender");
             if (!mutex.WaitOne(0))
             {
                 MessageBox.Show("MirrorPad est déjà lancé (icône près de l'horloge).", "MirrorPad");
-                return;
+                return 0;
             }
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }   // pixels réels sur chaque écran
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -29,6 +30,7 @@ namespace MirrorPad
             Application.ThreadException += (s, e) => Log.Write("erreur : " + e.Exception);
             AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Write("erreur fatale : " + e.ExceptionObject);
             Application.Run(new App());
+            return 0;
         }
 
         public static void ReleaseMutex()

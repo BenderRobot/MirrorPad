@@ -1727,17 +1727,30 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)imagePickerController:(UIImagePickerController*)pk didFinishPickingMediaWithInfo:(NSDictionary<NSString*,id>*)info {
  [pk dismissViewControllerAnimated:YES completion:nil];
- UIImage *img=info[UIImagePickerControllerOriginalImage];
- NSData *jpg=img?UIImageJPEGRepresentation(img,.92):nil;
- if(!jpg)return;
- NSDateFormatter *f=[NSDateFormatter new];f.dateFormat=@"'iPad_'yyyy-MM-dd_HH-mm-ss'.jpg'";
- NSData *name=[[f stringFromDate:[NSDate date]] dataUsingEncoding:NSUTF8StringEncoding];
- NSMutableData *frame=[NSMutableData dataWithLength:2];
- uint8_t *h=frame.mutableBytes;h[0]=(uint8_t)(name.length>>8);h[1]=(uint8_t)name.length;
- [frame appendData:name];[frame appendData:jpg];
- if(frame.length>=(1u<<24)){[self showNotice:@"Photos" text:@"Photo trop volumineuse (16 Mo maximum)." code:nil ok:NO];return;}
- [_input sendBinary:5 data:frame];
- [self showNotice:@"Photo envoyée" text:@"Elle arrive dans Téléchargements > MirrorPad sur le PC." code:nil ok:YES];
+ NSURL *url=info[UIImagePickerControllerImageURL];   // fichier de la photo (iOS 11+), sinon l'image décodée
+ UIImage *img=info[UIImagePickerControllerOriginalImage]?:info[UIImagePickerControllerEditedImage];
+ if(!url&&!img){[self showNotice:@"Photos" text:@"Impossible de lire cette photo (elle est peut-être restée sur iCloud)." code:nil ok:NO];return;}
+ [self showNotice:@"Photos" text:@"Envoi en cours…" code:nil ok:YES];
+ __weak typeof(self) w=self;MPSecureServer *input=_input;
+ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+  NSData *data=url?[NSData dataWithContentsOfURL:url]:nil;
+  NSString *ext=url.pathExtension.lowercaseString;
+  if(!data.length||!ext.length){data=img?UIImageJPEGRepresentation(img,.92):nil;ext=@"jpg";}
+  NSString *msg=nil;BOOL ok=NO;
+  if(!data.length)msg=@"Impossible de lire cette photo.";
+  else if(!input.connected)msg=@"Le PC s'est déconnecté : photo non envoyée.";
+  else {
+   NSDateFormatter *f=[NSDateFormatter new];f.dateFormat=@"'iPad_'yyyy-MM-dd_HH-mm-ss";
+   NSData *name=[[NSString stringWithFormat:@"%@.%@",[f stringFromDate:[NSDate date]],ext] dataUsingEncoding:NSUTF8StringEncoding];
+   NSMutableData *frame=[NSMutableData dataWithLength:2];
+   uint8_t *h=frame.mutableBytes;h[0]=(uint8_t)(name.length>>8);h[1]=(uint8_t)name.length;
+   [frame appendData:name];[frame appendData:data];
+   if(frame.length>=(1u<<24))msg=@"Photo trop volumineuse (16 Mo maximum).";
+   else {[input sendBinary:5 data:frame];ok=YES;
+    msg=[NSString stringWithFormat:@"%.1f Mo envoyés. Elle arrive dans Téléchargements > MirrorPad sur le PC.",frame.length/1048576.0];}
+  }
+  dispatch_async(dispatch_get_main_queue(),^{[w showNotice:ok?@"Photo envoyée":@"Photos" text:msg code:nil ok:ok];});
+ });
 }
 - (void)imagePickerControllerDidCancel:(UIImagePickerController*)pk {[pk dismissViewControllerAnimated:YES completion:nil];}
 // Presse-papiers : vérifié chaque seconde (iOS 12 ne prévient pas des copies)

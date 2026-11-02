@@ -135,6 +135,7 @@ namespace MirrorPad
             m.Items.AddRange(new ToolStripItem[] {
                 statusItem, versionItem, new ToolStripSeparator(), toggleItem,
                 new ToolStripMenuItem("Repérer les écrans…", null, (s, e) => FindScreens()),
+                new ToolStripMenuItem("Installer la webcam et le micro…", null, (s, e) => InstallDrivers()),
                 new ToolStripMenuItem("Paramètres…", null, (s, e) => ShowSettings()),
                 touchItem, startupItem, adminItem,
                 new ToolStripMenuItem("Rechercher une mise à jour", null, (s, e) => ThreadPool.QueueUserWorkItem(_ => CheckUpdate(true))),
@@ -306,6 +307,18 @@ namespace MirrorPad
                 Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
                 input.RefreshBounds();
             }
+        }
+
+        // Lance Installer-Pilotes.ps1 (akvirtualcamera + VB-CABLE) dans une fenêtre PowerShell visible
+        void InstallDrivers()
+        {
+            var ps1 = Path.Combine(appDir, "Installer-Pilotes.ps1");
+            if (!File.Exists(ps1)) { Balloon("Installer-Pilotes.ps1 manquant : faites « Rechercher une mise à jour ».", ToolTipIcon.Warning); return; }
+            try
+            {
+                Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\"") { UseShellExecute = true });
+            }
+            catch (Exception e) { Log.Write("installation des pilotes : " + e.Message); }
         }
 
         // ---------- capteurs de l'iPad ----------

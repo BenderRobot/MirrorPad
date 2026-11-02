@@ -4,3 +4,9 @@ windows/version.txt
 *.log
 windows/MirrorPad.exe
 __pycache__/
+# installateur : fichiers téléchargés ou générés par GitHub Actions
+windows/installer/ffmpeg.exe
+windows/installer/ffmpeg-LICENCE.txt
+windows/installer/akv/
+windows/installer/akvcam.nsh
+MirrorPad-Setup.exe

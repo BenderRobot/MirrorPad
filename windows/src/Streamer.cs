@@ -23,6 +23,9 @@ namespace MirrorPad
 
         public static string FindFfmpeg()
         {
+            // ffmpeg livré par l'installateur, à côté de MirrorPad.exe
+            var local = Path.Combine(Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath), "ffmpeg.exe");
+            if (File.Exists(local)) return local;
             foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
             {
                 try { var p = Path.Combine(dir.Trim().Trim('"'), "ffmpeg.exe"); if (File.Exists(p)) return p; } catch { }

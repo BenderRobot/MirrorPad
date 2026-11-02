@@ -66,7 +66,7 @@ namespace MirrorPad
         {
             Stop();
             var mgr = FindManager();
-            if (mgr == null) { Notify("Webcam : installez d'abord akvirtualcamera (github.com/webcamoid/akvirtualcamera)."); return; }
+            if (mgr == null) { Notify("Webcam : pilote manquant. Menu MirrorPad (icône près de l'horloge) > « Installer la webcam et le micro »."); return; }
             try
             {
                 if (!EnsureDevice(mgr)) { Notify("Webcam : impossible de créer la webcam virtuelle (autorisation refusée ?)."); return; }
@@ -148,7 +148,7 @@ namespace MirrorPad
         {
             Stop();
             int id = FindCable();
-            if (id < 0) { Notify("Micro : installez VB-CABLE (vb-audio.com/Cable), puis choisissez « CABLE Output » comme micro dans vos applis."); return; }
+            if (id < 0) { Notify("Micro : pilote manquant. Menu MirrorPad (icône près de l'horloge) > « Installer la webcam et le micro »."); return; }
             var f = new WAVEFORMATEX { wFormatTag = 1, nChannels = (ushort)channels, nSamplesPerSec = (uint)rate, wBitsPerSample = 16 };
             f.nBlockAlign = (ushort)(channels * 2); f.nAvgBytesPerSec = (uint)(rate * f.nBlockAlign);
             if (waveOutOpen(out dev, new UIntPtr((uint)id), ref f, IntPtr.Zero, IntPtr.Zero, 0) != 0) { dev = IntPtr.Zero; Notify("Micro : impossible d'ouvrir VB-CABLE."); return; }

@@ -1,0 +1,102 @@
+# À chaque push sur main : compile l'app iPad sur SRVHOME, l'installe aussitôt sur l'iPad,
+# emballe l'app Windows et publie une release GitHub (que l'app Windows récupère toute seule).
+name: Release MirrorPad
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  VERSION: 1.0.${{ github.run_number }}
+
+jobs:
+  ipad:
+    name: iPad (SRVHOME)
+    runs-on: [self-hosted, Linux, X64]   # SRVHOME (seul runner auto-hébergé du dépôt)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compiler
+        env:
+          MP_VERSION: ${{ env.VERSION }}
+        run: python3 ipad/build.py
+      - name: Installer sur l'iPad
+        continue-on-error: true   # iPad éteint : le cron de rattrapage s'en chargera
+        run: python3 ipad/deploy.py --deb "ipad/build/mirrorpad_${VERSION}_iphoneos-arm.deb" --save
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipad
+          path: ipad/build/*.deb
+
+  windows:
+    name: Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Mono (compilateur C#) et NSIS (installateur Windows)
+        run: sudo apt-get update -q && sudo apt-get install -y -q mono-devel nsis
+      - name: Compiler MirrorPad.exe
+        run: sh windows/build.sh
+      - name: Emballer
+        run: |
+          echo "$VERSION" > windows/version.txt
+          cd windows
+          zip ../MirrorPad-Windows.zip MirrorPad.exe MirrorPad.vbs MirrorPad-App.ps1 MirrorPad.ico MirrorPad.png Installer-Pilotes.ps1 version.txt
+      - name: Préparer l'installateur (ffmpeg + webcam virtuelle)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd windows/installer
+          # ffmpeg (build GPL statique de BtbN : ddagrab, QSV, NVENC, x264)
+          curl -fsSL -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          unzip -q -j -o ff.zip '*/bin/ffmpeg.exe' -d .
+          unzip -q -j -o ff.zip '*/LICENSE.txt' -d . && mv LICENSE.txt ffmpeg-LICENCE.txt || echo "FFmpeg (GPL) - sources : https://ffmpeg.org et https://github.com/BtbN/FFmpeg-Builds" > ffmpeg-LICENCE.txt
+          rm -f ff.zip
+          # webcam virtuelle : dernière version d'akvirtualcamera, avec ses options d'installation silencieuse
+          mkdir -p akv
+          gh release download -R webcamoid/akvirtualcamera --pattern '*.exe' -D akv || true
+          f=$(ls akv/*.exe 2>/dev/null | grep -i win | head -1); [ -n "$f" ] || f=$(ls akv/*.exe 2>/dev/null | head -1)
+          if [ -n "$f" ]; then
+            if strings "$f" | grep -qi "Inno Setup"; then a="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+            elif strings "$f" | grep -qi "Nullsoft"; then a="/S"
+            elif strings "$f" | grep -qi "QInstaller"; then a="--accept-licenses --default-answer --confirm-command install"
+            else a=""; fi
+            printf '!define AKVCAM_FILE "%s"\n!define AKVCAM_ARGS "%s"\n' "$f" "$a" > akvcam.nsh
+            echo "webcam : $f [$a]"
+          else
+            echo "; webcam indisponible" > akvcam.nsh
+            echo "::warning::akvirtualcamera introuvable, installateur sans webcam"
+          fi
+      - name: Construire MirrorPad-Setup.exe
+        run: |
+          cd windows/installer
+          makensis -V3 -DVERSION="$VERSION" MirrorPad.nsi
+          mv MirrorPad-Setup.exe ../../
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            MirrorPad-Windows.zip
+            MirrorPad-Setup.exe
+
+  release:
+    name: Publier
+    needs: [ipad, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Créer la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${VERSION}" dist/* --repo "$GITHUB_REPOSITORY" --title "MirrorPad ${VERSION}" --generate-notes
