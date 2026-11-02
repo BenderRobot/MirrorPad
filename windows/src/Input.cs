@@ -56,13 +56,13 @@ namespace MirrorPad
                 t.touch.rcContact = new Native.RECT { left = x - 4, top = y - 4, right = x + 4, bottom = y + 4 };
                 list.Add(t);
             }
-            if (list.Count > 0 && !Native.InjectTouch(list.ToArray()) && !touchWarned)
-            {
-                touchWarned = true;
-                Log.Write("tactile natif indisponible (erreur " + Native.PointerError + ") : Windows 10 1809 ou plus récent requis");
-            }
+            if (list.Count == 0) return;
+            bool ok = Native.InjectTouch(list.ToArray());
+            if (!touchSeen) { touchSeen = true; Log.Write("tactile natif : premier geste reçu (" + list.Count + " doigt(s) en " + list[0].touch.pointerInfo.ptPixelLocation.x + "," + list[0].touch.pointerInfo.ptPixelLocation.y + ", écran " + Bounds + ") → " + (ok ? "injecté" : "refusé, erreur " + Native.PointerError) + ", fenêtre « " + Native.ForegroundTitle() + " »"); }
+            else if (!ok && !touchWarned) { touchWarned = true; Log.Write("tactile natif refusé (erreur " + Native.PointerError + "), fenêtre « " + Native.ForegroundTitle() + " »"); }
         }
-        bool touchWarned, penDown;
+        bool touchWarned, penWarned, touchSeen, penSeen, penDown;
+        public void ResetDiagnostics() { touchSeen = penSeen = touchWarned = penWarned = false; }
 
         // ---- Stylet : « PD x y pression [e] », « PM … », « PU x y » (e = gomme)
         void Pen(string[] p)
@@ -88,11 +88,9 @@ namespace MirrorPad
                     t.pen.pointerInfo.pointerFlags = Native.PF_UPDATE;   // le stylet quitte la zone de détection
                     penDown = false; break;
             }
-            if (!Native.InjectPen(t) && !touchWarned)
-            {
-                touchWarned = true;
-                Log.Write("stylet indisponible (erreur " + Native.PointerError + ") : Windows 10 1809 ou plus récent requis");
-            }
+            bool ok = Native.InjectPen(t);
+            if (!penSeen) { penSeen = true; Log.Write("stylet : premier trait reçu (" + x + "," + y + ", pression " + t.pen.pressure + ") → " + (ok ? "injecté" : "refusé, erreur " + Native.PointerError) + ", fenêtre « " + Native.ForegroundTitle() + " »"); }
+            else if (!ok && !penWarned) { penWarned = true; Log.Write("stylet refusé (erreur " + Native.PointerError + "), fenêtre « " + Native.ForegroundTitle() + " »"); }
         }
 
         public void ReleaseAll()

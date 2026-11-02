@@ -114,6 +114,7 @@ namespace MirrorPad
         public struct POINTER_TYPE_INFO { [FieldOffset(0)] public int type; [FieldOffset(8)] public POINTER_TOUCH_INFO touch; [FieldOffset(8)] public POINTER_PEN_INFO pen; }
 
         [DllImport("user32.dll", SetLastError = true)] static extern IntPtr CreateSyntheticPointerDevice(int pointerType, uint maxCount, int mode);
+        [DllImport("user32.dll", SetLastError = true)] static extern void DestroySyntheticPointerDevice(IntPtr device);
         [DllImport("user32.dll", SetLastError = true)] static extern bool InjectSyntheticPointerInput(IntPtr device, [In] POINTER_TYPE_INFO[] info, uint count);
 
         public const int PT_TOUCH = 2, PT_PEN = 3;
@@ -127,7 +128,12 @@ namespace MirrorPad
             if (touchDev == IntPtr.Zero) touchDev = CreateSyntheticPointerDevice(PT_TOUCH, 10, 1);
             if (touchDev == IntPtr.Zero) { PointerError = Marshal.GetLastWin32Error(); return false; }
             if (InjectSyntheticPointerInput(touchDev, contacts, (uint)contacts.Length)) return true;
-            PointerError = Marshal.GetLastWin32Error(); return false;
+            PointerError = Marshal.GetLastWin32Error();
+            // périphérique virtuel devenu invalide (écran rebranché, session…) : on le recrée une fois
+            DestroySyntheticPointerDevice(touchDev); touchDev = CreateSyntheticPointerDevice(PT_TOUCH, 10, 1);
+            if (touchDev != IntPtr.Zero && InjectSyntheticPointerInput(touchDev, contacts, (uint)contacts.Length)) return true;
+            if (touchDev == IntPtr.Zero || PointerError == 0) PointerError = Marshal.GetLastWin32Error();
+            return false;
         }
 
         public static bool InjectPen(POINTER_TYPE_INFO pen)
@@ -135,7 +141,10 @@ namespace MirrorPad
             if (penDev == IntPtr.Zero) penDev = CreateSyntheticPointerDevice(PT_PEN, 1, 1);
             if (penDev == IntPtr.Zero) { PointerError = Marshal.GetLastWin32Error(); return false; }
             if (InjectSyntheticPointerInput(penDev, new[] { pen }, 1)) return true;
-            PointerError = Marshal.GetLastWin32Error(); return false;
+            PointerError = Marshal.GetLastWin32Error();
+            DestroySyntheticPointerDevice(penDev); penDev = CreateSyntheticPointerDevice(PT_PEN, 1, 1);
+            if (penDev != IntPtr.Zero && InjectSyntheticPointerInput(penDev, new[] { pen }, 1)) return true;
+            return false;
         }
 
         public static string ForegroundTitle()

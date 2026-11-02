@@ -236,6 +236,7 @@ namespace MirrorPad
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
+                input.ResetDiagnostics();
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
