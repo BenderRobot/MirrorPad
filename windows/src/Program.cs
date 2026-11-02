@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Windows.Forms;
@@ -16,8 +17,10 @@ namespace MirrorPad
         static Mutex mutex;
 
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            // « Envoyer vers > iPad (MirrorPad) » : on dépose la demande pour l'instance déjà lancée, et on s'arrête
+            if (args.Length > 0 && args[0] == "--send") { try { Outbox.Queue(args.Skip(1)); } catch { } return; }
             mutex = new Mutex(false, @"Local\MirrorPadSender");
             if (!mutex.WaitOne(0))
             {

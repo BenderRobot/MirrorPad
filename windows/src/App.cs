@@ -51,6 +51,9 @@ namespace MirrorPad
         readonly CameraBridge camera = new CameraBridge();
         readonly FocusWatcher focus = new FocusWatcher();
         readonly PcAudio sound = new PcAudio();
+        readonly Dashboard dashboard = new Dashboard();
+        readonly FileTransfer files = new FileTransfer();
+        FileSystemWatcher outboxWatcher;
         readonly MicPlayer mic = new MicPlayer();
         ClipboardWatcher clip;
         int ticks;
@@ -84,6 +87,16 @@ namespace MirrorPad
             input.Media = HandleMedia;
             clip = new ClipboardWatcher();
             hotkey = new HotkeyWindow { Pressed = SwapWindow };
+            files.Received = path => Post(() => Balloon("Fichier reçu de l'iPad : " + Path.GetFileName(path) + " (Téléchargements\\MirrorPad)", ToolTipIcon.Info));
+            dashboard.Checks = () => cfg.DashboardChecks;
+            try
+            {
+                Directory.CreateDirectory(Outbox.Dir);
+                outboxWatcher = new FileSystemWatcher(Outbox.Dir, "*.txt") { EnableRaisingEvents = true };
+                outboxWatcher.Created += (s, e) => ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(300); FlushOutbox(); });
+                MakeSendTo();
+            }
+            catch (Exception e) { Log.Write("envoi vers l'iPad : " + e.Message); }
             fgTimer.Tick += (s, e) => ForegroundTick(); fgTimer.Start();
             clip.TextCopied = t => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.Send("CB " + Uri.EscapeDataString(t)); };
             clip.ImageCopied = b => { var s = session; if (cfg.ShareClipboard && s != null && !s.IsClosed) s.SendFrame(Session.ClipImage, b, 0, b.Length); };
@@ -145,6 +158,7 @@ namespace MirrorPad
             adminItem = new ToolStripMenuItem("Mode administrateur (saisie dans les fenêtres admin)", null, (s, e) => SetAdminMode(!cfg.AdminMode)) { Checked = cfg.AdminMode };
             m.Items.AddRange(new ToolStripItem[] {
                 statusItem, versionItem, new ToolStripSeparator(), toggleItem,
+                new ToolStripMenuItem("Envoyer un fichier vers l'iPad…", null, (s, e) => PickFilesToSend()),
                 new ToolStripMenuItem("Repérer les écrans…", null, (s, e) => FindScreens()),
                 new ToolStripMenuItem("Installer les composants manquants…", null, (s, e) => InstallDrivers()),
                 new ToolStripMenuItem("Paramètres…", null, (s, e) => ShowSettings()),
@@ -261,6 +275,7 @@ namespace MirrorPad
                 s.BinaryReceived += HandleBinary;
                 input.ResetDiagnostics();
                 sleepRequested = false; lastFg = "";   // la Touch Bar est renvoyée à la nouvelle session
+                ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(2000); FlushOutbox(); });   // fichiers en attente
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
                 if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); input.Tapped = focus.Tapped; focus.Start(); }
@@ -280,7 +295,7 @@ namespace MirrorPad
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
                     if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested && !streamer.AdaptRestart) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
-                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop(); focus.Stop(); sound.Stop();
+                streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop(); focus.Stop(); sound.Stop(); dashboard.Stop();
                 s.Close();
                 session = null;
                 Thread.Sleep(1000);
@@ -288,6 +303,48 @@ namespace MirrorPad
         }
 
         // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
+        // ---------- fichiers vers l'iPad ----------
+        void PickFilesToSend()
+        {
+            using (var d = new OpenFileDialog { Multiselect = true, Title = "Envoyer vers l'iPad" })
+                if (d.ShowDialog() == DialogResult.OK) Outbox.Queue(d.FileNames);
+        }
+
+        // demandes déposées par le menu, « Envoyer vers » ou une 2e instance : envoyées dès que l'iPad est connecté
+        readonly object outboxLock = new object();
+        void FlushOutbox()
+        {
+            lock (outboxLock)
+            {
+                var s = session;
+                if (s == null || s.IsClosed) return;
+                foreach (var req in Directory.GetFiles(Outbox.Dir, "*.txt"))
+                {
+                    string[] paths;
+                    try { paths = File.ReadAllLines(req); File.Delete(req); } catch { continue; }
+                    foreach (var path in paths.Where(File.Exists))
+                    {
+                        try { FileTransfer.Send(s, path); Post(() => Balloon("Envoyé à l'iPad : " + Path.GetFileName(path), ToolTipIcon.Info)); }
+                        catch (Exception e) { Log.Write("envoi de " + path + " : " + e.Message); }
+                    }
+                }
+            }
+        }
+
+        // raccourci « iPad (MirrorPad) » dans le menu Envoyer vers de l'Explorateur
+        void MakeSendTo()
+        {
+            var lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SendTo), "iPad (MirrorPad).lnk");
+            var t = Type.GetTypeFromProgID("WScript.Shell");
+            dynamic sh = Activator.CreateInstance(t);
+            dynamic l = sh.CreateShortcut(lnk);
+            l.TargetPath = Application.ExecutablePath; l.Arguments = "--send"; l.WorkingDirectory = appDir;
+            var ico = Path.Combine(appDir, "MirrorPad.ico");
+            l.IconLocation = (File.Exists(ico) ? ico : Application.ExecutablePath) + ",0";
+            l.Description = "Envoyer le fichier sur l'iPad";
+            l.Save();
+        }
+
         // ---------- Touch Bar contextuelle ----------
         void ForegroundTick()
         {
@@ -431,6 +488,13 @@ namespace MirrorPad
         void HandleMedia(string[] p)
         {
             if (p[0] == "WIN") { Post(SwapWindow); return; }
+            if (p[0] == "DB")
+            {
+                var ds = session;
+                if (ds != null && p.Length >= 2 && p[1] == "START") { dashboard.Send = line => ds.Send(line); dashboard.Start(); }
+                else dashboard.Stop();
+                return;
+            }
             if (p[0] == "SND")
             {
                 // son du PC vers les haut-parleurs de l'iPad
@@ -466,6 +530,9 @@ namespace MirrorPad
                 case Session.Camera: camera.Feed(data); break;
                 case Session.Audio: mic.Play(data); break;
                 case Session.ClipImage: if (cfg.ShareClipboard) Post(() => clip.SetImage(data)); break;
+                case FileTransfer.FrameType:
+                    try { files.Receive(data); } catch (Exception e) { Log.Write("réception de fichier : " + e.Message); }
+                    break;
                 case Session.File:
                     try
                     {

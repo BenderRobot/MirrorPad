@@ -21,8 +21,10 @@ namespace MirrorPad
               "Tout sélectionner|ctrl+a", "Enregistrer|ctrl+s", "Nouveau|ctrl+n");
             P("photoshop", "Photoshop", "Pinceau|b", "Gomme|e", "Déplacer|v", "Lasso|l", "Pipette|i", "Main|h", "Inverser couleurs|x",
               "Zoom +|ctrl+plus", "Zoom −|ctrl+minus", "Annuler|ctrl+z", "Rétablir|ctrl+shift+z", "Nouveau calque|ctrl+shift+n");
-            P("powerpnt", "PowerPoint", "Diaporama|f5", "Depuis ici|shift+f5", "◀ Précédente|left", "Suivante ▶|right", "Écran noir|b", "Écran blanc|w",
-              "Quitter|esc", "Nouvelle diapo|ctrl+m", "Enregistrer|ctrl+s");
+            // Mode présentateur : Alt+F5 lance le diaporama avec le « mode Présentateur » de PowerPoint, qu'on place sur
+            // l'écran de l'iPad (notes, diapo suivante, chrono) pendant que le public voit l'écran principal / le projecteur
+            P("powerpnt", "PowerPoint", "Présentateur|alt+f5", "Diaporama|f5", "◀ Précédente|left", "Suivante ▶|right", "Laser|ctrl+l",
+              "Stylo|ctrl+p", "Effacer l'encre|e", "Écran noir|b", "Écran blanc|w", "Quitter|esc");
             P("code", "VS Code", "Exécuter|ctrl+f5", "Déboguer|f5", "Pas à pas|f10", "Entrer|f11", "Arrêter|shift+f5", "Point d'arrêt|f9",
               "Commandes|ctrl+shift+p", "Rechercher|ctrl+shift+f", "Formater|shift+alt+f", "Enregistrer|ctrl+s");
             P("chrome,brave,msedge,firefox,opera", "Navigateur", "◀ Précédent|alt+left", "Suivant ▶|alt+right", "Recharger|f5", "Adresse|ctrl+l",

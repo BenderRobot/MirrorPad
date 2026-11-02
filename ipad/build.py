@@ -22,6 +22,7 @@ info = {
     'NSCameraUsageDescription': "La caméra de l'iPad sert de webcam pour le PC (Teams, Zoom…).",
     'NSMicrophoneUsageDescription': "Le micro de l'iPad sert de micro pour le PC.",
     'NSPhotoLibraryUsageDescription': "Pour envoyer vos photos au PC.",
+    'NSPhotoLibraryAddUsageDescription': "Pour ranger dans Photos les images et vidéos envoyées depuis le PC.",
     'CFBundleURLTypes': [{'CFBundleURLName': 'local.btv.mirrorpad', 'CFBundleURLSchemes': ['mirrorpad']}],
     'CFBundleIcons~ipad': {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon76x76']}},
 }

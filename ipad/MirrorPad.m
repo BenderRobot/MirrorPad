@@ -201,7 +201,8 @@ static NSString *MPDeviceId(void){
 - (void)start;
 - (void)send:(NSString*)line;
 - (void)disconnect;               // envoie la file d'attente puis ferme la session
-- (void)sendBinary:(uint8_t)type data:(NSData*)d;   // 3 webcam, 4 image copiée, 5 fichier, 6 micro
+- (void)sendBinary:(uint8_t)type data:(NSData*)d;   // 3 webcam, 4 image copiée, 5 fichier, 6 micro, 8 fichier en morceaux
+- (NSUInteger)pending;                               // trames en attente d'envoi (pour ne pas saturer la mémoire)
 @property(nonatomic,copy) void (^onSound)(NSData *pcm);   // 7 : son du PC (fil réseau)
 @end
 @implementation MPSecureServer {
@@ -244,6 +245,7 @@ static NSString *MPDeviceId(void){
  }
  [self enqueue:type data:d];
 }
+- (NSUInteger)pending {@synchronized(_queue){return _queue.count;}}
 - (void)disconnect {
  _closing=YES;
  uint8_t one=1;write(_wake[1],&one,1);
@@ -342,6 +344,9 @@ static NSString *MPDeviceId(void){
    } else if(type==4&&_auth){
     NSData *img=[NSData dataWithBytes:h+4 length:len];
     [self ui:^{if(self.onBinary)self.onBinary(4,img);}];
+   } else if(type==8&&_auth){
+    NSData *chunk=[NSData dataWithBytes:h+4 length:len];
+    [self ui:^{if(self.onBinary)self.onBinary(8,chunk);}];
    } else if(type==7&&_auth){
     // son du PC : remis directement au haut-parleur (sans passer par le fil principal)
     if(self.onSound)self.onSound([NSData dataWithBytes:h+4 length:len]);
@@ -427,7 +432,8 @@ done:
 @property(nonatomic) CGSize videoSize;
 @property(nonatomic) BOOL longPressEnabled,inertiaEnabled;
 @property(nonatomic,copy) void (^onFourFingerTap)(void);
-@property(nonatomic,copy) void (^onThreeFingerSwipeUp)(void);   // envoie la fenêtre active du PC sur l'iPad (ou la ramène)
+@property(nonatomic,copy) void (^onThreeFingerSwipeUp)(void);
+@property(nonatomic,copy) void (^onTwoFingerHold)(CGPoint p);   // deux doigts immobiles 0,6 s : loupe   // envoie la fenêtre active du PC sur l'iPad (ou la ramène)
 @property(nonatomic) NSInteger inputMode;   // 0 souris, 1 tactile Windows natif, 2 stylet
 @property(nonatomic) BOOL penEraser;
 @end
@@ -435,6 +441,7 @@ done:
  NSMutableDictionary<NSValue*,NSNumber*> *_ids;   // doigt -> numéro de contact (tactile natif)
  BOOL _quad,_quadMoved;     // tactile natif : 3 ou 4 doigts posés = geste réservé à l'iPad (clavier, fenêtre, réglages)
  NSUInteger _quadFingers;
+ CGPoint _holdStart;
  int _mode;                 // 0 rien, 1 un doigt, 2 deux doigts, 3 trois doigts
  BOOL _dragging,_moved,_longFired,_decided,_pinching;
  __weak UITouch *_primary;
@@ -527,6 +534,17 @@ done:
  CGFloat pr=t?fmin(1,fmax(.15,(t.majorRadius-4)/18)):0;
  [self out:[NSString stringWithFormat:@"%@ %.5f %.5f %.3f%@\n",kind,n.x,n.y,pr,_penEraser?@" e":@""]];
 }
+- (void)cancelHold {[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(twoFingerHold) object:nil];}
+- (void)twoFingerHold {
+ if(_inputMode==1){
+  if(_quad)return;
+  _quad=YES;_quadFingers=2;_quadMoved=YES;   // les doigts restent posés : rien d'autre ne se déclenchera au lever
+ } else {
+  if(_mode!=2||_decided)return;
+  _decided=YES;_moved=YES;                    // pas de clic droit au lever
+ }
+ if(self.onTwoFingerHold)self.onTwoFingerHold(_holdStart);
+}
 - (void)cancelLongPress {[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(longPress) object:nil];}
 - (void)longPress {
  if(_mode!=1||_dragging)return;
@@ -555,6 +573,8 @@ static const CGFloat MPScrollGain=2.4;
  [self stopInertia];
  if(_inputMode==1){
   NSArray *all=[self active:e];
+  if(all.count==2&&!_quad){_holdStart=[self centroid:all];[self cancelHold];[self performSelector:@selector(twoFingerHold) withObject:nil afterDelay:.6];}
+  else [self cancelHold];
   if(all.count>=3&&!_quad){[self cancelNative:e];_quad=YES;_quadMoved=NO;_quadFingers=0;_centroidStart=_centroid=[self centroid:all];}
   if(_quad)_quadFingers=MAX(_quadFingers,all.count);
   if(!_quad)[self touchFrame:e];
@@ -575,6 +595,7 @@ static const CGFloat MPScrollGain=2.4;
   _mode=2;_moved=NO;_decided=NO;_pinching=NO;_velocity=0;
   _centroid=_centroidStart=[self centroid:a];_scrollRef=_centroid.y;_scrollAcc=0;
   _pinchRef=[self spread:a];_lastMoveTime=e.timestamp;
+  _holdStart=_centroid;[self cancelHold];[self performSelector:@selector(twoFingerHold) withObject:nil afterDelay:.6];
  }
 }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
@@ -585,6 +606,7 @@ static const CGFloat MPScrollGain=2.4;
    if(all.count>=3){CGPoint c=[self centroid:all];_centroid=c;if(hypot(c.x-_centroidStart.x,c.y-_centroidStart.y)>40)_quadMoved=YES;}
    return;
   }
+  {NSArray *all=[self active:e];if(all.count!=2||hypot([self centroid:all].x-_holdStart.x,[self centroid:all].y-_holdStart.y)>12)[self cancelHold];}
   [self touchFrame:e];return;
  }
  NSArray *a=[self active:e];
@@ -601,6 +623,7 @@ static const CGFloat MPScrollGain=2.4;
    CGFloat pinch=fabs(d-_pinchRef),pan=hypot(c.x-_centroidStart.x,c.y-_centroidStart.y);
    if(pinch>24&&pinch>pan*1.2){_decided=YES;_pinching=YES;_moved=YES;_pinchRef=d;}
    else if(pan>10){_decided=YES;_moved=YES;}
+   if(_decided)[self cancelHold];
   }
   if(_decided&&_pinching){
    // un cran de zoom tous les 12 % d'écartement
@@ -620,6 +643,7 @@ static const CGFloat MPScrollGain=2.4;
  }
 }
 - (void)finish:(UIEvent*)e cancelled:(BOOL)cancelled {
+ if([self active:e].count<2)[self cancelHold];
  if(_inputMode==1){
   if(_quad){
    // 3 / 4 doigts : on attend qu'ils soient tous levés, puis on décide du geste
@@ -1079,6 +1103,8 @@ static NSString *MPAgo(NSDate *date){
 @property(nonatomic,copy) void (^onCamera)(void);
 @property(nonatomic,copy) void (^onMic)(void);
 @property(nonatomic,copy) void (^onPhotos)(void);
+@property(nonatomic,copy) void (^onFiles)(void);
+@property(nonatomic,copy) void (^onDashboard)(void);
 - (void)showIn:(UIView*)parent;
 @end
 @implementation MPSettingsPanel {
@@ -1116,6 +1142,8 @@ static const int MPQualities[3]={6,12,20};
 - (void)openCamera {[self hide];if(self.onCamera)self.onCamera();}
 - (void)toggleMic {[self hide];if(self.onMic)self.onMic();}
 - (void)openPhotos {[self hide];if(self.onPhotos)self.onPhotos();}
+- (void)openFiles {[self hide];if(self.onFiles)self.onFiles();}
+- (void)openDashboard {[self hide];if(self.onDashboard)self.onDashboard();}
 - (void)modeChanged {
  NSUserDefaults *d=MPDefaults();
  [d setInteger:_inputMode.selectedSegmentIndex forKey:@"inputMode"];
@@ -1153,9 +1181,9 @@ static const int MPQualities[3]={6,12,20};
  _penTool=[[UISegmentedControl alloc] initWithItems:@[@"Stylo",@"Gomme"]];
  for(UISegmentedControl *sc in @[_inputMode,_penTool]){sc.tintColor=UIColor.whiteColor;[sc addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];}
  UILabel *modeNote=MPLabel(@"Souris : gestes MirrorPad · Tactile : écran tactile Windows natif · Stylet : tablette graphique (Windows Ink).",13,UIFontWeightRegular,.6,0);
- UIStackView *tools=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Pavé tactile" action:@selector(openTrackpad)],[self tool:@"Raccourcis" action:@selector(openShortcuts)],[self tool:@"Clavier" action:@selector(openKeyboard)]]];
+ UIStackView *tools=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Pavé tactile" action:@selector(openTrackpad)],[self tool:@"Raccourcis" action:@selector(openShortcuts)],[self tool:@"Clavier" action:@selector(openKeyboard)],[self tool:@"Tableau de bord" action:@selector(openDashboard)]]];
  tools.distribution=UIStackViewDistributionFillEqually;tools.spacing=10;
- UIStackView *sensors=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Webcam" action:@selector(openCamera)],[self tool:@"Micro" action:@selector(toggleMic)],[self tool:@"Envoyer des photos" action:@selector(openPhotos)]]];
+ UIStackView *sensors=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Webcam" action:@selector(openCamera)],[self tool:@"Micro" action:@selector(toggleMic)],[self tool:@"Envoyer des photos" action:@selector(openPhotos)],[self tool:@"Envoyer un fichier" action:@selector(openFiles)]]];
  sensors.distribution=UIStackViewDistributionFillEqually;sensors.spacing=10;
  _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
  _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
@@ -1645,6 +1673,100 @@ static const CGFloat MPTouchBarHeight=50;
 - (void)hide {[UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];}
 @end
 
+// Tableau de bord : horloge + état du PC en direct (processeur, mémoire, réseau, disque) + contrôles personnalisés
+@interface MPDashboardView : UIView
+@property(nonatomic,copy) void (^onClose)(void);
+- (void)showIn:(UIView*)parent;
+- (void)update:(NSArray<NSString*>*)p;
+@end
+@implementation MPDashboardView { CAGradientLayer *_bg; UILabel *_clock,*_date,*_pc; NSMutableDictionary<NSString*,UILabel*> *_values; NSMutableDictionary<NSString*,UIView*> *_bars; UIStackView *_checks; NSTimer *_tick; }
+- (UIView*)card:(NSString*)key title:(NSString*)title {
+ UIView *c=[UIView new];c.backgroundColor=[UIColor colorWithWhite:1 alpha:.10];c.layer.cornerRadius=18;c.layer.borderWidth=1;c.layer.borderColor=[UIColor colorWithWhite:1 alpha:.18].CGColor;
+ UILabel *t=MPLabel(title.uppercaseString,12,UIFontWeightBold,.6,.8);t.textAlignment=NSTextAlignmentLeft;
+ UILabel *v=MPLabel(@"—",30,UIFontWeightBold,1,-.5);v.textAlignment=NSTextAlignmentLeft;v.adjustsFontSizeToFitWidth=YES;
+ UIView *track=[UIView new];track.backgroundColor=[UIColor colorWithWhite:1 alpha:.12];track.layer.cornerRadius=3;
+ UIView *bar=[UIView new];bar.backgroundColor=MPRGB(0x16C6FF,1);bar.layer.cornerRadius=3;[track addSubview:bar];
+ for(UIView *x in @[t,v,track]){x.translatesAutoresizingMaskIntoConstraints=NO;[c addSubview:x];}
+ [NSLayoutConstraint activateConstraints:@[[t.topAnchor constraintEqualToAnchor:c.topAnchor constant:16],[t.leadingAnchor constraintEqualToAnchor:c.leadingAnchor constant:18],
+  [v.topAnchor constraintEqualToAnchor:t.bottomAnchor constant:6],[v.leadingAnchor constraintEqualToAnchor:t.leadingAnchor],[v.trailingAnchor constraintEqualToAnchor:c.trailingAnchor constant:-18],
+  [track.leadingAnchor constraintEqualToAnchor:t.leadingAnchor],[track.trailingAnchor constraintEqualToAnchor:c.trailingAnchor constant:-18],
+  [track.bottomAnchor constraintEqualToAnchor:c.bottomAnchor constant:-18],[track.heightAnchor constraintEqualToConstant:6]]];
+ _values[key]=v;_bars[key]=bar;bar.frame=CGRectMake(0,0,0,6);
+ return c;
+}
+- (instancetype)initWithFrame:(CGRect)f {
+ if(!(self=[super initWithFrame:f]))return nil;
+ _bg=MPBackdrop();[self.layer addSublayer:_bg];
+ _values=[NSMutableDictionary dictionary];_bars=[NSMutableDictionary dictionary];
+ _clock=MPLabel(@"",64,UIFontWeightThin,1,-1);_clock.textAlignment=NSTextAlignmentLeft;
+ _date=MPLabel(@"",18,UIFontWeightMedium,.7,0);_date.textAlignment=NSTextAlignmentLeft;
+ _pc=MPLabel(@"",14,UIFontWeightSemibold,.55,.6);_pc.textAlignment=NSTextAlignmentLeft;
+ UIButton *close=MPGlassButton(@"Fermer",16);[close addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+ UIStackView *timeCol=[[UIStackView alloc] initWithArrangedSubviews:@[_clock,_date,_pc]];timeCol.axis=UILayoutConstraintAxisVertical;timeCol.spacing=2;
+ UIStackView *head=[[UIStackView alloc] initWithArrangedSubviews:@[timeCol,close]];head.alignment=UIStackViewAlignmentTop;head.distribution=UIStackViewDistributionEqualSpacing;
+ UIStackView *r1=[[UIStackView alloc] initWithArrangedSubviews:@[[self card:@"cpu" title:@"Processeur"],[self card:@"ram" title:@"Mémoire"],[self card:@"disk" title:@"Disque système"]]];
+ UIStackView *r2=[[UIStackView alloc] initWithArrangedSubviews:@[[self card:@"down" title:@"Réception"],[self card:@"up" title:@"Envoi"],[self card:@"uptime" title:@"Allumé depuis"]]];
+ for(UIStackView *r in @[r1,r2]){r.spacing=14;r.distribution=UIStackViewDistributionFillEqually;}
+ UILabel *ct=MPLabel(@"SURVEILLANCE",12,UIFontWeightBold,.6,.8);ct.textAlignment=NSTextAlignmentLeft;
+ _checks=[UIStackView new];_checks.axis=UILayoutConstraintAxisVertical;_checks.spacing=8;
+ [_checks addArrangedSubview:MPLabel(@"Ajoutez vos sites et serveurs dans config.json du PC (section « DashboardChecks »).",14,UIFontWeightRegular,.55,0)];
+ UIStackView *all=[[UIStackView alloc] initWithArrangedSubviews:@[head,r1,r2,ct,_checks,[UIView new]]];all.axis=UILayoutConstraintAxisVertical;all.spacing=16;
+ [r1.heightAnchor constraintEqualToConstant:130].active=YES;[r2.heightAnchor constraintEqualToConstant:130].active=YES;
+ all.translatesAutoresizingMaskIntoConstraints=NO;[self addSubview:all];
+ [NSLayoutConstraint activateConstraints:@[[all.topAnchor constraintEqualToAnchor:self.topAnchor constant:28],[all.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-20],
+  [all.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:28],[all.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28]]];
+ [self tickClock];
+ __weak typeof(self) w=self;_tick=[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t){(void)t;[w tickClock];}];
+ return self;
+}
+- (void)tickClock {
+ NSDateFormatter *f=[NSDateFormatter new];f.locale=[NSLocale localeWithLocaleIdentifier:@"fr_FR"];
+ f.dateFormat=@"HH:mm";_clock.text=[f stringFromDate:[NSDate date]];
+ f.dateFormat=@"EEEE d MMMM";_date.text=[f stringFromDate:[NSDate date]].capitalizedString;
+}
+- (void)setBar:(NSString*)k fraction:(double)x warn:(BOOL)warn {
+ UIView *b=_bars[k];UIView *track=b.superview;if(!b)return;
+ x=fmin(1,fmax(0,x));
+ [UIView animateWithDuration:.5 animations:^{b.frame=CGRectMake(0,0,track.bounds.size.width*x,6);}];
+ b.backgroundColor=warn?MPRGB(0xFF6B6B,1):(x>.7?MPRGB(0xFFC14D,1):MPRGB(0x16C6FF,1));
+}
+static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@"%.1f Mo/s",kb/1024] stringByReplacingOccurrencesOfString:@"." withString:@","]:[NSString stringWithFormat:@"%.0f Ko/s",kb];}
+// « DB cpu ramUsed ramTotal upKo downKo disque% minutes nomPC » ; « DBX nom|ok|détail … »
+- (void)update:(NSArray<NSString*>*)p {
+ if([p[0] isEqualToString:@"DB"]&&p.count>=9){
+  double cpu=p[1].doubleValue,used=p[2].doubleValue,total=p[3].doubleValue,up=p[4].doubleValue,down=p[5].doubleValue,disk=p[6].doubleValue;long mins=p[7].integerValue;
+  _values[@"cpu"].text=[NSString stringWithFormat:@"%.0f %%",cpu];[self setBar:@"cpu" fraction:cpu/100 warn:cpu>90];
+  _values[@"ram"].text=[[NSString stringWithFormat:@"%.1f / %.0f Go",used,total] stringByReplacingOccurrencesOfString:@"." withString:@","];[self setBar:@"ram" fraction:total>0?used/total:0 warn:total>0&&used/total>.92];
+  _values[@"disk"].text=[NSString stringWithFormat:@"%.0f %% utilisé",disk];[self setBar:@"disk" fraction:disk/100 warn:disk>92];
+  _values[@"down"].text=MPRate(down);[self setBar:@"down" fraction:down/(12.5*1024) warn:NO];   // échelle : 100 Mb/s
+  _values[@"up"].text=MPRate(up);[self setBar:@"up" fraction:up/(12.5*1024) warn:NO];
+  _values[@"uptime"].text=mins>=1440?[NSString stringWithFormat:@"%ld j %ld h",mins/1440,(mins%1440)/60]:[NSString stringWithFormat:@"%ld h %02ld",mins/60,mins%60];
+  [self setBar:@"uptime" fraction:0 warn:NO];
+  _pc.text=[[p[8] stringByRemovingPercentEncoding]?:@"" uppercaseString];
+ } else if([p[0] isEqualToString:@"DBX"]){
+  for(UIView *v in _checks.arrangedSubviews){[_checks removeArrangedSubview:v];[v removeFromSuperview];}
+  for(NSUInteger i=1;i<p.count;i++){
+   NSArray *f=[[p[i] stringByRemovingPercentEncoding] componentsSeparatedByString:@"|"];if(f.count<3)continue;
+   BOOL ok=[f[1] isEqualToString:@"ok"];
+   UILabel *l=MPLabel([NSString stringWithFormat:@"●  %@   —   %@",f[0],f[2]],17,UIFontWeightMedium,1,0);l.textAlignment=NSTextAlignmentLeft;
+   NSMutableAttributedString *a=[[NSMutableAttributedString alloc] initWithString:l.text attributes:@{NSForegroundColorAttributeName:UIColor.whiteColor,NSFontAttributeName:l.font}];
+   [a addAttribute:NSForegroundColorAttributeName value:ok?MPRGB(0x4CD964,1):MPRGB(0xFF6B6B,1) range:NSMakeRange(0,1)];l.attributedText=a;
+   [_checks addArrangedSubview:l];
+  }
+ }
+}
+- (void)layoutSubviews {[super layoutSubviews];[CATransaction begin];[CATransaction setDisableActions:YES];_bg.frame=self.bounds;[CATransaction commit];}
+- (void)showIn:(UIView*)parent {
+ self.frame=parent.bounds;self.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ self.alpha=0;[parent addSubview:self];[UIView animateWithDuration:.3 animations:^{self.alpha=1;}];
+}
+- (void)hide {
+ [_tick invalidate];_tick=nil;
+ if(self.onClose)self.onClose();
+ [UIView animateWithDuration:.25 animations:^{self.alpha=0;} completion:^(BOOL done){(void)done;[self removeFromSuperview];}];
+}
+@end
+
 // Écran de la webcam : aperçu, changement de caméra ; « Masquer » laisse la webcam tourner
 @interface MPCameraView : UIView
 @property(nonatomic,copy) void (^onSwitch)(void);
@@ -1727,7 +1849,7 @@ static const CGFloat MPTouchBarHeight=50;
 
 #pragma mark - Interface
 
-@interface MPViewController : UIViewController<UIImagePickerControllerDelegate,UINavigationControllerDelegate>
+@interface MPViewController : UIViewController<UIImagePickerControllerDelegate,UINavigationControllerDelegate,UIDocumentPickerDelegate>
 @end
 @implementation MPViewController {
  AVSampleBufferDisplayLayer *_video;
@@ -1752,6 +1874,9 @@ static const CGFloat MPTouchBarHeight=50;
  BOOL _autoKb;                // clavier ouvert parce que le PC a signalé une zone de saisie
  MPSpeaker *_speaker;         // son du PC
  MPTouchBar *_bar;            // Touch Bar contextuelle
+ CGFloat _zoom;CGPoint _zoomAt;UILabel *_zoomBadge;   // loupe (2 doigts maintenus)
+ NSMutableDictionary<NSNumber*,NSFileHandle*> *_rxFiles;NSMutableDictionary<NSNumber*,NSString*> *_rxPaths;   // fichiers reçus du PC
+ MPDashboardView *_dash;      // tableau de bord
  BOOL _soundOn;               // son demandé au PC pour cette connexion
  CGRect _fieldNorm;           // zone de saisie (coordonnées 0..1 de l'écran du PC)
  CGFloat _kbHeight;           // hauteur du clavier affiché
@@ -1781,6 +1906,7 @@ static const CGFloat MPTouchBarHeight=50;
  _touch.emit=^(NSString *line){[weakInput send:line];};
  _touch.onFourFingerTap=^{[w showSettings];};
  _touch.onThreeFingerSwipeUp=^{[weakInput send:@"WIN SWAP\n"];};
+ _touch.onTwoFingerHold=^(CGPoint p){[w toggleZoomAt:p];};
  [self.view addSubview:_touch];
 
  _hud=[MPHud new];_hud.translatesAutoresizingMaskIntoConstraints=NO;_hud.hidden=YES;
@@ -1824,7 +1950,7 @@ static const CGFloat MPTouchBarHeight=50;
  _input.onPairing=^(NSString *pc,NSString *code){[w showNotice:@"Nouveau PC" text:[NSString stringWithFormat:@"« %@ » demande à utiliser cet iPad. Vérifiez que ce code s'affiche sur le PC, puis cliquez sur « Accepter » là-bas.",pc] code:code ok:YES];};
  _input.onNotice=^(NSString *title,NSString *text,BOOL ok){[w showNotice:title text:text code:nil ok:ok];};
  _input.onVideoStart=^(int fd){dispatch_async(dispatch_get_main_queue(),^{[w startDecoder:fd];});};
- _input.onBinary=^(uint8_t type,NSData *data){if(type==4)[w clipboardImage:data];};
+ _input.onBinary=^(uint8_t type,NSData *data){if(type==4)[w clipboardImage:data];else if(type==8)[w fileChunk:data];};
  _speaker=[MPSpeaker new];
  MPSpeaker *spk=_speaker;
  _input.onSound=^(NSData *pcm){[spk feed:pcm];};
@@ -1898,6 +2024,8 @@ static const CGFloat MPTouchBarHeight=50;
   }
  } else if([k isEqualToString:@"MSG"]&&p.count>=2){
   [self showNotice:@"MirrorPad" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
+ } else if([k isEqualToString:@"DB"]||[k isEqualToString:@"DBX"]){
+  [_dash update:p];
  } else if([k isEqualToString:@"TB"]&&p.count>=2){
   // Touch Bar : « TB <titre> <libellé|touches>… » (encodés)
   NSMutableArray *items=[NSMutableArray array];
@@ -1964,6 +2092,8 @@ static const CGFloat MPTouchBarHeight=50;
  panel.onCamera=^{[w showCamera];};
  panel.onMic=^{[w toggleMic];};
  panel.onPhotos=^{[w pickPhoto];};
+ panel.onFiles=^{[w pickFile];};
+ panel.onDashboard=^{[w showDashboard];};
  [panel showIn:self.view];
 }
 - (void)showTrackpad {
@@ -2026,12 +2156,126 @@ static const CGFloat MPTouchBarHeight=50;
   CGFloat kbTop=self.view.bounds.size.height-_kbHeight;
   dy=fmin(_kbHeight,fmax(0,fieldBottom-kbTop+28));
  }
- CGAffineTransform t=CGAffineTransformMakeTranslation(0,-dy);
+ // loupe : agrandissement autour du point choisi (coordonnées de la zone tactile), puis décalage « clavier »
+ CGAffineTransform z=CGAffineTransformIdentity;
+ if(_zoom>1){
+  CGPoint c=CGPointMake(_touch.bounds.size.width/2,_touch.bounds.size.height/2);
+  z=CGAffineTransformMake(_zoom,0,0,_zoom,(_zoomAt.x-c.x)*(1-_zoom),(_zoomAt.y-c.y)*(1-_zoom));
+ }
+ CGAffineTransform t=CGAffineTransformConcat(z,CGAffineTransformMakeTranslation(0,-dy));
  if(CGAffineTransformEqualToTransform(_touch.transform,t))return;
  [CATransaction begin];[CATransaction setAnimationDuration:animated?.25:0];
  _video.affineTransform=t;
  [CATransaction commit];
  [UIView animateWithDuration:animated?.25:0 animations:^{self->_touch.transform=t;}];
+}
+
+#pragma mark Loupe
+// 2 doigts maintenus : agrandit ×2,5 autour du point ; on s'en sert normalement (1 doigt = clic précis), 2 doigts maintenus à nouveau = sortie
+- (void)toggleZoomAt:(CGPoint)p {
+ if(_zoom>1){_zoom=1;[_zoomBadge removeFromSuperview];_zoomBadge=nil;}
+ else {
+  _zoom=2.5;_zoomAt=p;
+  _zoomBadge=MPLabel(@"  Loupe ×2,5 · maintenez 2 doigts pour quitter  ",14,UIFontWeightSemibold,1,0);
+  _zoomBadge.backgroundColor=[UIColor colorWithWhite:0 alpha:.6];_zoomBadge.layer.cornerRadius=14;_zoomBadge.clipsToBounds=YES;
+  [_zoomBadge sizeToFit];CGRect f=_zoomBadge.frame;f.size.height=28;f.origin=CGPointMake((self.view.bounds.size.width-f.size.width)/2,14);_zoomBadge.frame=f;
+  _zoomBadge.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin;
+  [self.view addSubview:_zoomBadge];
+ }
+ [self applyKeyboardShift:YES];
+}
+
+#pragma mark Fichiers reçus du PC (« Envoyer vers > iPad »)
+// trame 8 : [id 4][drapeaux 1 : 1 début, 2 fin][début : longueur nom 2 + nom][données]
+- (void)fileChunk:(NSData*)d {
+ if(d.length<5)return;
+ const uint8_t *b=d.bytes;uint32_t fid;memcpy(&fid,b,4);uint8_t flags=b[4];size_t off=5;
+ if(!_rxFiles){_rxFiles=[NSMutableDictionary dictionary];_rxPaths=[NSMutableDictionary dictionary];}
+ NSNumber *key=@(fid);
+ if(flags&1){
+  if(d.length<7)return;
+  size_t n=(size_t)b[5]<<8|b[6];off=7+n;if(d.length<off)return;
+  NSString *name=[[[NSString alloc] initWithBytes:b+7 length:n encoding:NSUTF8StringEncoding] lastPathComponent]?:@"fichier";
+  NSString *dir=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/MirrorPad"];
+  [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString *path=[dir stringByAppendingPathComponent:name];
+  for(int i=2;[NSFileManager.defaultManager fileExistsAtPath:path];i++)
+   path=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@ (%d).%@",name.stringByDeletingPathExtension,i,name.pathExtension]];
+  [NSFileManager.defaultManager createFileAtPath:path contents:nil attributes:nil];
+  NSFileHandle *h=[NSFileHandle fileHandleForWritingAtPath:path];if(!h)return;
+  _rxFiles[key]=h;_rxPaths[key]=path;
+  [self showNotice:@"Réception" text:[NSString stringWithFormat:@"%@…",name] code:nil ok:YES];
+ }
+ NSFileHandle *h=_rxFiles[key];if(!h)return;
+ [h writeData:[d subdataWithRange:NSMakeRange(off,d.length-off)]];
+ if(flags&2){
+  [h closeFile];NSString *path=_rxPaths[key];[_rxFiles removeObjectForKey:key];[_rxPaths removeObjectForKey:key];
+  [self fileReceived:path];
+ }
+}
+// photos et vidéos -> Photos ; le reste -> menu de partage (« Enregistrer dans Fichiers », ouvrir dans une app…)
+- (void)fileReceived:(NSString*)path {
+ NSString *ext=path.pathExtension.lowercaseString;
+ if([@[@"jpg",@"jpeg",@"png",@"heic",@"gif"] containsObject:ext]){
+  UIImage *img=[UIImage imageWithContentsOfFile:path];
+  if(img){UIImageWriteToSavedPhotosAlbum(img,nil,nil,nil);[self showNotice:@"Fichier reçu" text:[path.lastPathComponent stringByAppendingString:@" a été ajouté à Photos."] code:nil ok:YES];return;}
+ }
+ if([@[@"mov",@"mp4",@"m4v"] containsObject:ext]&&UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(path)){
+  UISaveVideoAtPathToSavedPhotosAlbum(path,nil,nil,nil);[self showNotice:@"Fichier reçu" text:[path.lastPathComponent stringByAppendingString:@" a été ajouté à Photos."] code:nil ok:YES];return;
+ }
+ UIActivityViewController *a=[[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+ a.modalPresentationStyle=UIModalPresentationPopover;
+ a.popoverPresentationController.sourceView=self.view;
+ a.popoverPresentationController.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds),1,1);
+ a.popoverPresentationController.permittedArrowDirections=0;
+ [self presentViewController:a animated:YES completion:nil];
+}
+
+#pragma mark Fichiers envoyés au PC (app Fichiers de l'iPad)
+- (void)pickFile {
+ if(!_input.connected){[self showNotice:@"Fichiers" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
+ UIDocumentPickerViewController *pk=[[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.item"] inMode:UIDocumentPickerModeImport];
+ pk.delegate=self;pk.allowsMultipleSelection=YES;
+ [self presentViewController:pk animated:YES completion:nil];
+}
+- (void)documentPicker:(UIDocumentPickerViewController*)c didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+ (void)c;
+ MPSecureServer *input=_input;__weak typeof(self) w=self;
+ [self showNotice:@"Fichiers" text:[NSString stringWithFormat:@"Envoi de %lu fichier(s) au PC…",(unsigned long)urls.count] code:nil ok:YES];
+ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+  unsigned long sent=0;
+  for(NSURL *u in urls){
+   NSInputStream *in=[NSInputStream inputStreamWithURL:u];[in open];
+   uint32_t fid=arc4random();NSData *name=[u.lastPathComponent dataUsingEncoding:NSUTF8StringEncoding];
+   if(name.length>1000)name=[name subdataWithRange:NSMakeRange(0,1000)];
+   uint8_t *buf=malloc(256*1024);BOOL first=YES,ok=YES;
+   NSNumber *size=nil;[u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+   unsigned long long total=size.unsignedLongLongValue,done=0;
+   while(ok){
+    while(input.pending>12&&input.connected)usleep(20000);   // on laisse partir les morceaux précédents
+    if(!input.connected){ok=NO;break;}
+    NSInteger n=[in read:buf maxLength:256*1024];if(n<0){ok=NO;break;}
+    done+=(unsigned long long)n;BOOL last=n==0||done>=total;
+    NSMutableData *f=[NSMutableData dataWithBytes:&fid length:4];uint8_t fl=(first?1:0)|(last?2:0);[f appendBytes:&fl length:1];
+    if(first){uint8_t l[2]={(uint8_t)(name.length>>8),(uint8_t)name.length};[f appendBytes:l length:2];[f appendData:name];}
+    [f appendBytes:buf length:(NSUInteger)n];
+    [input sendBinary:8 data:f];first=NO;
+    if(last)break;
+   }
+   free(buf);[in close];if(ok)sent++;
+  }
+  dispatch_async(dispatch_get_main_queue(),^{[w showNotice:@"Fichiers" text:[NSString stringWithFormat:@"%lu fichier(s) envoyé(s) dans Téléchargements > MirrorPad sur le PC.",sent] code:nil ok:sent==urls.count];});
+ });
+}
+
+#pragma mark Tableau de bord
+- (void)showDashboard {
+ if(!_input.connected){[self showNotice:@"Tableau de bord" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
+ _dash=[MPDashboardView new];
+ __weak typeof(self) w=self;__weak MPSecureServer *in=_input;
+ _dash.onClose=^{[in send:@"DB STOP\n"];typeof(self) s=w;if(s)s->_dash=nil;};
+ [_dash showIn:self.view];
+ [_input send:@"DB START\n"];
 }
 
 #pragma mark Capteurs : webcam, micro, photos, presse-papiers
