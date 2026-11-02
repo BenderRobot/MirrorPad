@@ -713,23 +713,27 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
 - (BOOL)start;
 - (void)stop;
 @end
-@implementation MPMic { AVAudioEngine *_engine; AVAudioConverter *_conv; AVAudioFormat *_target; }
+@implementation MPMic { AVAudioEngine *_engine; AVAudioConverter *_conv; AVAudioFormat *_target; Class _bufferClass; }
 - (BOOL)start {
  [self stop];
- AVAudioSession *as=AVAudioSession.sharedInstance;NSError *err=nil;
- [as setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionMixWithOthers error:&err];
+ // Classes audio cherchées par leur nom : sur iOS 12 elles sont dans AVFoundation, sur iOS 14.5+ dans AVFAudio
+ Class Session=NSClassFromString(@"AVAudioSession"),Engine=NSClassFromString(@"AVAudioEngine"),Format=NSClassFromString(@"AVAudioFormat"),Converter=NSClassFromString(@"AVAudioConverter");
+ _bufferClass=NSClassFromString(@"AVAudioPCMBuffer");
+ if(!Session||!Engine||!Format||!Converter||!_bufferClass)return NO;
+ AVAudioSession *as=[Session sharedInstance];NSError *err=nil;
+ [as setCategory:@"AVAudioSessionCategoryPlayAndRecord" withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionMixWithOthers error:&err];
  [as setActive:YES error:&err];
- _engine=[AVAudioEngine new];
+ _engine=[Engine new];
  AVAudioInputNode *input=_engine.inputNode;
  AVAudioFormat *inFmt=[input outputFormatForBus:0];
  if(inFmt.sampleRate<=0){_engine=nil;return NO;}
- _target=[[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:48000 channels:1 interleaved:YES];
- _conv=[[AVAudioConverter alloc] initFromFormat:inFmt toFormat:_target];
+ _target=[[Format alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:48000 channels:1 interleaved:YES];
+ _conv=[[Converter alloc] initFromFormat:inFmt toFormat:_target];
  __weak typeof(self) w=self;
  [input installTapOnBus:0 bufferSize:1024 format:inFmt block:^(AVAudioPCMBuffer *buf,AVAudioTime *when){
   (void)when;typeof(self) s=w;if(!s)return;
   AVAudioFrameCount cap=(AVAudioFrameCount)(buf.frameLength*48000.0/inFmt.sampleRate)+32;
-  AVAudioPCMBuffer *out=[[AVAudioPCMBuffer alloc] initWithPCMFormat:s->_target frameCapacity:cap];
+  AVAudioPCMBuffer *out=[[s->_bufferClass alloc] initWithPCMFormat:s->_target frameCapacity:cap];
   __block BOOL given=NO;NSError *e=nil;
   [s->_conv convertToBuffer:out error:&e withInputFromBlock:^AVAudioBuffer*(AVAudioPacketCount n,AVAudioConverterInputStatus *st){
    (void)n;if(given){*st=AVAudioConverterInputStatus_NoDataNow;return nil;}
