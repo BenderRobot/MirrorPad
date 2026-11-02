@@ -709,6 +709,7 @@ static const CGFloat MPScrollGain=2.4;
 // Caméra de l'iPad encodée en H.264 par la puce (VideoToolbox), envoyée au PC (trame 3, flux Annex B)
 @interface MPCamera : NSObject<AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic,copy) void (^onFrame)(NSData *annexB);
+@property(nonatomic,copy) BOOL (^canSend)(void);   // NO = réseau saturé : image sautée (évite que la mémoire déborde)
 @property(nonatomic,readonly) AVCaptureSession *session;
 @property(nonatomic,readonly) BOOL front;
 - (BOOL)start:(BOOL)front;
@@ -742,6 +743,8 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
 @implementation MPCamera {
  VTCompressionSessionRef _vt;
  dispatch_queue_t _q;
+ BOOL _needKey;
+ NSUInteger _skipped;
 }
 - (BOOL)start:(BOOL)front {
  [self stop];
@@ -778,7 +781,15 @@ static void MPEncoded(void *ref,void *src,OSStatus st,VTEncodeInfoFlags flags,CM
 - (void)captureOutput:(AVCaptureOutput*)o didOutputSampleBuffer:(CMSampleBufferRef)sb fromConnection:(AVCaptureConnection*)c {
  (void)o;(void)c;
  if(!_vt)return;
- VTCompressionSessionEncodeFrame(_vt,CMSampleBufferGetImageBuffer(sb),CMSampleBufferGetPresentationTimeStamp(sb),kCMTimeInvalid,NULL,NULL,NULL);
+ BOOL (^can)(void)=self.canSend;
+ if(can&&!can()){   // file d'envoi pleine : on n'encode pas, et la prochaine image envoyée sera une image clé
+  _needKey=YES;if(++_skipped%30==1)NSLog(@"MirrorPad: webcam, réseau saturé, images sautées (%lu)",(unsigned long)_skipped);
+  return;
+ }
+ CFDictionaryRef props=NULL;
+ if(_needKey){const void *k[]={kVTEncodeFrameOptionKey_ForceKeyFrame},*v[]={kCFBooleanTrue};props=CFDictionaryCreate(NULL,k,v,1,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);_needKey=NO;}
+ VTCompressionSessionEncodeFrame(_vt,CMSampleBufferGetImageBuffer(sb),CMSampleBufferGetPresentationTimeStamp(sb),kCMTimeInvalid,props,NULL,NULL);
+ if(props)CFRelease(props);
 }
 - (void)stop {
  [_session stopRunning];_session=nil;
@@ -2292,6 +2303,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  if(!_camera.session){
   __weak MPSecureServer *in=_input;
   _camera.onFrame=^(NSData *f){[in sendBinary:3 data:f];};
+  _camera.canSend=^BOOL{return in.pending<20;};
   if(![_camera start:YES]){[self showNotice:@"Webcam" text:@"La caméra est indisponible. Autorisez MirrorPad dans Réglages > Confidentialité > Appareil photo." code:nil ok:NO];return;}
   [_input send:@"CAM START 1280 720 30"];
  }
@@ -2313,6 +2325,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   if(!wasRunning||_camera.front!=front){
    __weak MPSecureServer *in=_input;
    _camera.onFrame=^(NSData *f){[in sendBinary:3 data:f];};
+   _camera.canSend=^BOOL{return in.pending<20;};
    if(![_camera start:front]){[_input send:[NSString stringWithFormat:@"MSG %@\n",MPEsc(@"Caméra de l'iPad indisponible (autorisation dans Réglages > Confidentialité > Appareil photo).")]];return;}
    if(_camView)[_camView attach:_camera.session];
   }

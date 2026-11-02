@@ -22,6 +22,7 @@ namespace MirrorPad
         readonly Button bFront, bBack, bSnap, bRec;
         Bitmap last; readonly object frameLock = new object();
         DateTime lastFrame = DateTime.MinValue;
+        int painting;   // 1 = une image attend d'être affichée
         string recPath;
         bool full;
         readonly System.Windows.Forms.Timer watch = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -67,8 +68,8 @@ namespace MirrorPad
 
         void StartDecoder()
         {
-            decoder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 500000 -analyzeduration 500000 -f h264 -i pipe:0 " +
-                "-vf scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2 -pix_fmt bgr24 -f rawvideo pipe:1")
+            decoder = Process.Start(new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 32768 -analyzeduration 0 -f h264 -i pipe:0 " +
+                "-vf scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2 -fps_mode passthrough -pix_fmt bgr24 -f rawvideo pipe:1")
                 { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true });
             var d = decoder;
             d.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data) && errLines++ < 20) Log.Write("caméra (décodage) : " + e.Data); };
@@ -90,12 +91,14 @@ namespace MirrorPad
                         if (lastFrame == DateTime.MinValue && !firstImageLogged) { firstImageLogged = true; Log.Write("caméra de l'iPad : première image affichée"); }
                         lastFrame = DateTime.Now;
                         if (IsDisposed) { bmp.Dispose(); return; }
+                        if (Interlocked.CompareExchange(ref painting, 1, 0) != 0) { bmp.Dispose(); continue; }   // affichage en retard : image sautée
                         BeginInvoke((Action)(() =>
                         {
                             Bitmap old;
                             lock (frameLock) { old = last; last = bmp; }
                             pic.Image = bmp;
                             if (old != null) old.Dispose();
+                            Interlocked.Exchange(ref painting, 0);
                         }));
                     }
                 }
@@ -103,14 +106,39 @@ namespace MirrorPad
             }) { IsBackground = true, Name = "caméra iPad" }.Start();
         }
 
-        // flux H.264 de l'iPad (trame 3)
-        int errLines; bool firstImageLogged; long fed;
+        // flux H.264 de l'iPad (trame 3). Appelé par la boucle de réception : ne bloque jamais.
+        // Les images passent par une file vidée par un fil à part ; si le décodage prend du retard, on jette tout
+        // jusqu'à la prochaine image clé (l'iPad met SPS/PPS devant chacune : 00 00 00 01 67)
+        int errLines; bool firstImageLogged; long fed; bool waitKey; int dropped;
+        readonly System.Collections.Generic.Queue<byte[]> feedQ = new System.Collections.Generic.Queue<byte[]>();
+        Thread feeder;
         public void Feed(byte[] h264)
         {
             if (fed == 0) Log.Write("caméra de l'iPad : premières données reçues (" + h264.Length + " octets, début " + BitConverter.ToString(h264, 0, Math.Min(8, h264.Length)) + ")");
             fed += h264.Length;
-            try { var d = decoder; if (d != null) { d.StandardInput.BaseStream.Write(h264, 0, h264.Length); d.StandardInput.BaseStream.Flush(); } } catch { }
-            try { var r = recorder; if (r != null) r.StandardInput.BaseStream.Write(h264, 0, h264.Length); } catch { }
+            bool key = h264.Length > 4 && h264[0] == 0 && h264[1] == 0 && h264[2] == 0 && h264[3] == 1 && (h264[4] & 0x1F) == 7;
+            lock (feedQ)
+            {
+                if (feedQ.Count > 15) { feedQ.Clear(); waitKey = true; if (dropped++ < 5) Log.Write("caméra de l'iPad : décodage en retard, on saute jusqu'à la prochaine image clé"); }
+                if (waitKey && !key) return;
+                waitKey = false;
+                feedQ.Enqueue(h264);
+                Monitor.Pulse(feedQ);
+            }
+            if (feeder == null)
+            {
+                feeder = new Thread(() =>
+                {
+                    while (!IsDisposed)
+                    {
+                        byte[] f;
+                        lock (feedQ) { while (feedQ.Count == 0) { Monitor.Wait(feedQ, 500); if (IsDisposed) return; } f = feedQ.Dequeue(); }
+                        try { var d = decoder; if (d != null) { d.StandardInput.BaseStream.Write(f, 0, f.Length); d.StandardInput.BaseStream.Flush(); } } catch { }
+                        try { var r = recorder; if (r != null) r.StandardInput.BaseStream.Write(f, 0, f.Length); } catch { }
+                    }
+                }) { IsBackground = true, Name = "caméra iPad (envoi au décodeur)" };
+                feeder.Start();
+            }
         }
 
         public void CameraStopped() { lastFrame = DateTime.MinValue; }

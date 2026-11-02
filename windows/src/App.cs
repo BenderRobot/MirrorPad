@@ -77,6 +77,7 @@ namespace MirrorPad
             input.RefreshBounds();
             input.RestartStream = () => { restartRequested = true; streamer.Stop(); };
             input.Placed = PlaceVirtual;
+            input.AfterDriverRestart = () => { WakeVirtual(); input.RefreshBounds(); PlaceVirtual(); };
             input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
             input.Sleep = () => { Log.Write("iPad verrouillé"); sleepRequested = true; lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();

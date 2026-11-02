@@ -389,13 +389,34 @@ namespace MirrorPad
 
         // « RES w h » : l'iPad demande la taille exacte de sa zone d'affichage (sans la Touch Bar),
         // pour que l'image remplisse l'écran sans bandes noires
+        readonly System.Collections.Generic.HashSet<string> triedModes = new System.Collections.Generic.HashSet<string>();
+        public Action AfterDriverRestart;   // le pilote d'écran vient de redémarrer : rebrancher l'écran virtuel
         void RequestResolution(int w, int h)
         {
             var dev = TargetDevice;
             if (string.IsNullOrEmpty(dev) || w < 320 || h < 320) return;
+            if (!Native.SupportsMode(dev, w, h) && !triedModes.Contains(w + "x" + h))
+            {
+                // première demande de cette taille : MirrorPad l'ajoute lui-même au pilote d'écran (mode administrateur),
+                // le pilote redémarre, l'écran se rebranche et l'iPad redemande sa taille
+                triedModes.Add(w + "x" + h);
+                Log.Write("mode " + w + "x" + h + " absent du pilote d'écran : ajout automatique");
+                if (HoldStream != null) HoldStream(8000);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    bool ok = VirtualDriver.AddMode(w, h);
+                    Thread.Sleep(3000);
+                    if (ok && AfterDriverRestart != null) AfterDriverRestart();
+                    RefreshBounds();
+                    var d2 = TargetDevice;
+                    if (!string.IsNullOrEmpty(d2) && Native.SupportsMode(d2, w, h)) ChangeResolution(w, h);
+                    else { if (HoldStream != null) HoldStream(0); RequestResolution(w, h); }
+                });
+                return;
+            }
             if (!Native.SupportsMode(dev, w, h))
             {
-                Log.Write("mode " + w + "x" + h + " absent du pilote d'écran : menu MirrorPad > « Installer les composants manquants… »");
+                Log.Write("mode " + w + "x" + h + " toujours absent du pilote d'écran (MirrorPad doit être en mode administrateur)");
                 bool portrait = h > w;
                 // repli : bonne orientation dans la taille iPad complète
                 int fw = portrait ? 1536 : 2048, fh = portrait ? 2048 : 1536;
