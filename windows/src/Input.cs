@@ -15,6 +15,7 @@ namespace MirrorPad
         bool leftDown;
         public Action<string> Reply;                // envoi d'une ligne à l'iPad
         public Action RestartStream;                // relancer ffmpeg (rotation, qualité)
+        public Action<int> HoldStream;              // couper ffmpeg et attendre n ms avant de le relancer (rotation)
         public Action Sleep;                        // l'iPad se verrouille
         public Action<string[]> Media;              // CAM / MIC / CB : traités par l'application
 
@@ -179,14 +180,21 @@ namespace MirrorPad
             RefreshBounds();
             var b = Bounds; var dev = TargetDevice;
             if ((b.Height > b.Width) == portrait || string.IsNullOrEmpty(dev)) return;
+            // on coupe l'image AVANT de basculer : l'iPad ne voit pas Windows réorganiser le bureau,
+            // puis la capture reprend une fois le fond d'écran et les icônes en place
+            if (HoldStream != null) HoldStream(1200);
             int r = Native.SetResolution(dev, b.Height, b.Width);
             if (r == 0)
             {
                 Log.Write("écran virtuel en " + (portrait ? "portrait" : "paysage") + " (" + b.Height + "x" + b.Width + ")");
                 RefreshBounds();
-                if (RestartStream != null) RestartStream();
+                if (HoldStream != null) HoldStream(1000);   // délai compté à partir de la bascule effective
             }
-            else Log.Write("rotation impossible (code " + r + ") : lancez Ajouter-Portrait.ps1 en administrateur");
+            else
+            {
+                if (HoldStream != null) HoldStream(0);
+                Log.Write("rotation impossible (code " + r + ") : lancez Ajouter-Portrait.ps1 en administrateur");
+            }
         }
     }
 }

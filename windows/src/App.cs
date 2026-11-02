@@ -35,6 +35,8 @@ namespace MirrorPad
         readonly string localVersion;
         readonly string ffmpeg;
         volatile bool wanted;
+        volatile bool restartRequested;   // ffmpeg arrêté exprès (rotation, qualité) : pas un échec
+        DateTime holdUntil = DateTime.MinValue;   // pas de capture avant cette heure (bureau en cours de réorganisation)
         volatile Session session;
         string state = "";
         DateTime lostAt = DateTime.MinValue;
@@ -61,8 +63,9 @@ namespace MirrorPad
             streamer = new Streamer(cfg);
             input = new InputHandler(cfg);
             input.RefreshBounds();
-            input.RestartStream = () => streamer.Stop();
-            input.Sleep = () => { Log.Write("iPad verrouillé"); var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
+            input.RestartStream = () => { restartRequested = true; streamer.Stop(); };
+            input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
+            input.Sleep = () => { Log.Write("iPad verrouillé"); lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
 
             BuildIcons(); BuildMenu();
@@ -179,7 +182,7 @@ namespace MirrorPad
             if (s != null && !s.IsClosed) lastAlive = DateTime.Now;
             // iPad absent depuis 20 s (éteint, hors Wi-Fi…) : on débranche l'écran virtuel
             else if (cfg.SleepWithIPad && !cfg.VirtualDetached && (DateTime.Now - lastAlive).TotalSeconds > 20 && lastAlive != DateTime.MinValue)
-            { lastAlive = DateTime.MinValue; ThreadPool.QueueUserWorkItem(_ => SleepVirtual()); }
+            { lastAlive = DateTime.MinValue; ThreadPool.QueueUserWorkItem(_ => SleepVirtual(true)); }
             if (!wanted) { SetState("idle"); return; }
             SetState(s != null && !s.IsClosed && streamer.Running && (DateTime.Now - streamer.StartedAt).TotalSeconds >= 2 ? "connected" : "waiting");
         }
@@ -226,8 +229,9 @@ namespace MirrorPad
                     continue;
                 }
                 fails = 0;
+                session = s;              // la session compte comme « vivante » dès maintenant…
+                lastAlive = DateTime.Now; // …pour que la règle des 20 s ne retire pas l'écran pendant qu'on le rebranche
                 WakeVirtual();   // l'écran virtuel revient avant l'image
-                session = s;
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
@@ -238,11 +242,14 @@ namespace MirrorPad
                 // diffusion : on relance ffmpeg tant que la session vit (rotation, qualité, encodeur en échec…)
                 while (wanted && !s.IsClosed)
                 {
+                    while (DateTime.Now < holdUntil && !s.IsClosed) Thread.Sleep(40);   // rotation : on laisse Windows finir
+                    if (s.IsClosed) break;
+                    restartRequested = false;
                     streamer.ActiveEncoder = streamer.PickEncoder(ffmpeg, msg => Post(() => Balloon(msg, ToolTipIcon.Info)));
                     s.Send("C " + cfg.Fps + " " + cfg.Mbps + " " + Uri.EscapeDataString(Streamer.EncoderNames[streamer.ActiveEncoder]));
                     var t0 = DateTime.Now;
                     try { streamer.Run(ffmpeg, s); } catch (Exception e) { Log.Write("ffmpeg : " + e.Message); }
-                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed) { WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
+                    if ((DateTime.Now - t0).TotalSeconds < 3 && !s.IsClosed && !restartRequested) { Log.Write("ffmpeg s'est arrêté aussitôt : vérification de l'écran virtuel"); WakeVirtual(); Thread.Sleep(3000); }   // échec immédiat : écran virtuel absent ?
                 }
                 streamer.Stop(); input.ReleaseAll(); camera.Stop(); mic.Stop();
                 s.Close();
@@ -252,12 +259,14 @@ namespace MirrorPad
         }
 
         // ---------- écran virtuel : débranché quand l'iPad dort, rebranché à son retour ----------
-        void SleepVirtual()
+        void SleepVirtual(bool onlyIfAbsent = false)
         {
             if (!cfg.SleepWithIPad) return;
             lock (displayLock)
             {
                 if (cfg.VirtualDetached) return;
+                var cur = session;
+                if (onlyIfAbsent && cur != null && !cur.IsClosed) return;   // l'iPad est revenu entre-temps : on garde l'écran
                 input.RefreshBounds();
                 var dev = input.TargetDevice;
                 int x, y, w, h;

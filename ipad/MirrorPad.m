@@ -1477,6 +1477,11 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
  NSString *_encoderName;
  double _rttMs;
  BOOL _streaming;
+ // rotation : un rideau aux couleurs de l'app masque la bascule du bureau Windows
+ UIView *_curtain;
+ BOOL _rotating,_streamAlive,_revealScheduled;
+ unsigned _rotGen,_rotFromGen;
+ NSString *_pendingOrientation;
 }
 - (UILabel*)label:(NSString*)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor*)c {
  UILabel *l=[UILabel new];l.text=t;l.font=[UIFont systemFontOfSize:s weight:w];l.textColor=c;l.numberOfLines=0;l.textAlignment=NSTextAlignmentCenter;return l;
@@ -1552,11 +1557,13 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)decoder:(unsigned)gen connected:(BOOL)c {
  if(gen!=_decoderGen)return;
+ _streamAlive=c;
  if(c){[self setConnected:YES];return;}
+ if(_rotating)return;   // rotation en cours : le flux suivant arrive, on garde le rideau
  // fin de flux : on attend un peu avant d'afficher l'accueil (une relance est peut-être en cours)
  __weak typeof(self) w=self;
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-  typeof(self) s=w;if(s&&gen==s->_decoderGen)[s setConnected:NO];
+  typeof(self) s=w;if(s&&gen==s->_decoderGen&&!s->_rotating&&!s->_streamAlive)[s setConnected:NO];
  });
 }
 - (void)showNotice:(NSString*)title text:(NSString*)text code:(NSString*)code ok:(BOOL)ok {
@@ -1772,7 +1779,54 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)c {
  [super viewWillTransitionToSize:size withTransitionCoordinator:c];
- [_input send:[self orientationLine:size]]; // le PC bascule l'écran virtuel en portrait / paysage
+ CGSize cur=self.view.bounds.size;
+ if((size.height>size.width)==(cur.height>cur.width))return;   // demi-tour (180°) : rien à basculer côté PC
+ if(_streaming)[self showCurtain];
+ // anti-rebond : si l'iPad est tourné plusieurs fois de suite, on n'envoie que la position finale
+ _pendingOrientation=[self orientationLine:size];
+ [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(sendPendingOrientation) object:nil];
+ [self performSelector:@selector(sendPendingOrientation) withObject:nil afterDelay:.2];
+}
+- (void)sendPendingOrientation {
+ if(_pendingOrientation)[_input send:_pendingOrientation];   // le PC bascule l'écran virtuel en portrait / paysage
+ _pendingOrientation=nil;
+}
+// Rideau de rotation : dégradé de l'app + logo, le temps que Windows réorganise le bureau
+- (void)showCurtain {
+ if(!_curtain){
+  _curtain=[[UIView alloc] initWithFrame:self.view.bounds];
+  _curtain.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+  _curtain.userInteractionEnabled=NO;
+  CAGradientLayer *g=MPBackdrop();g.frame=CGRectMake(0,0,4096,4096);[_curtain.layer addSublayer:g];
+  UIImageView *logo=[[UIImageView alloc] initWithImage:[UIImage imageNamed:@"Logo"]];
+  logo.frame=CGRectMake(0,0,72,72);logo.layer.cornerRadius=18;logo.clipsToBounds=YES;logo.tag=1;
+  logo.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin|UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin;
+  [_curtain addSubview:logo];
+  UIActivityIndicatorView *spin=[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhite];
+  spin.tag=2;spin.autoresizingMask=logo.autoresizingMask;[spin startAnimating];
+  [_curtain addSubview:spin];
+ }
+ _curtain.frame=self.view.bounds;
+ UIView *logo=[_curtain viewWithTag:1],*spin=[_curtain viewWithTag:2];
+ CGPoint mid=CGPointMake(CGRectGetMidX(_curtain.bounds),CGRectGetMidY(_curtain.bounds));
+ logo.center=CGPointMake(mid.x,mid.y-20);spin.center=CGPointMake(mid.x,mid.y+46);
+ if(!_curtain.superview){_curtain.alpha=0;[self.view insertSubview:_curtain belowSubview:_hud];}
+ _rotating=YES;_revealScheduled=NO;_rotFromGen=_decoderGen;
+ unsigned rg=++_rotGen;
+ [_curtain.layer removeAllAnimations];
+ [UIView animateWithDuration:.16 animations:^{self->_curtain.alpha=1;}];
+ // sécurité : si le PC ne bascule pas (portrait non installé…), on rend la main après 5 s
+ __weak typeof(self) w=self;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+  typeof(self) s=w;if(s&&s->_rotGen==rg&&s->_rotating)[s hideCurtain];
+ });
+}
+- (void)hideCurtain {
+ _rotating=NO;_revealScheduled=NO;
+ if(!_streamAlive){[self setConnected:NO];return;}   // plus de flux du tout : retour à l'accueil
+ UIView *c=_curtain;if(!c.superview)return;
+ [UIView animateWithDuration:.35 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{c.alpha=0;}
+                  completion:^(BOOL done){if(done&&c.alpha==0)[c removeFromSuperview];}];
 }
 - (void)viewDidLayoutSubviews {
  [super viewDidLayoutSubviews];
@@ -1781,6 +1835,13 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
 - (void)enqueue:(CMSampleBufferRef)sb gen:(unsigned)gen {
  if(gen!=_decoderGen)return;   // image d'un flux précédent
  [self enqueue:sb];
+ if(_rotating&&!_revealScheduled&&gen!=_rotFromGen){
+  // première image du nouveau flux : on la laisse s'afficher puis on lève le rideau
+  _revealScheduled=YES;unsigned rg=_rotGen;__weak typeof(self) w=self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(.25*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+   typeof(self) s=w;if(s&&s->_rotGen==rg&&s->_rotating)[s hideCurtain];
+  });
+ }
 }
 - (void)enqueue:(CMSampleBufferRef)sb {
  if(_video.status==AVQueuedSampleBufferRenderingStatusFailed){NSLog(@"MirrorPad: décodeur en erreur %@",_video.error);[_video flush];}
@@ -1794,6 +1855,7 @@ static UIButton *MPGlassButton(NSString *title,CGFloat size){
                    completion:^(BOOL done){if(done&&home.alpha==0)home.hidden=YES;}];
  } else {
   [_video flushAndRemoveImage];
+  _rotating=NO;[_curtain.layer removeAllAnimations];[_curtain removeFromSuperview];
   home.hidden=NO;
   [UIView animateWithDuration:.45 animations:^{home.alpha=1;home.transform=CGAffineTransformIdentity;}];
  }
