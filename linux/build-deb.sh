@@ -57,7 +57,7 @@ Priority: optional
 Maintainer: Benjamin Laurens <noreply@github.com>
 Depends: python3 (>= 3.9), python3-gi, python3-gst-1.0, gir1.2-gtk-3.0, gir1.2-gstreamer-1.0, gir1.2-gst-plugins-base-1.0,
  gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly,
- gir1.2-ayatanaappindicator3-0.1, gnome-shell-extension-appindicator, gir1.2-atspi-2.0, at-spi2-core, openssl, pkexec | policykit-1, libnotify-bin
+ gir1.2-ayatanaappindicator3-0.1, gnome-shell-extension-appindicator, gir1.2-atspi-2.0, at-spi2-core, gstreamer1.0-pulseaudio, pulseaudio-utils, openssl, pkexec | policykit-1, libnotify-bin
 Recommends: gstreamer1.0-vaapi, intel-media-va-driver | i965-va-driver | mesa-va-drivers
 Homepage: https://github.com/BenderRobot/bsidedesk
 Description: L'iPad comme écran supplémentaire tactile (GNOME Wayland)

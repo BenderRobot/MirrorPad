@@ -10,7 +10,7 @@ Lancé automatiquement à l'ouverture de la session (paquet bsidedesk). Icône d
     bsidedesk --pair     confirmer un appairage depuis un terminal (SSH), sans voir l'écran
     bsidedesk --update   rechercher une mise à jour maintenant
 """
-import argparse, hashlib, hmac, json, os, secrets, select, signal, socket, ssl, subprocess, sys, threading, time, urllib.parse, urllib.request
+import argparse, ctypes, hashlib, hmac, json, os, secrets, select, signal, socket, ssl, subprocess, sys, threading, time, urllib.parse, urllib.request
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -615,6 +615,72 @@ class Streamer:
 
 
 # ======================================================================================
+# Son du PC sur les haut-parleurs de l'iPad (« SND START » / « SND STOP ») : écoute de la sortie son par défaut
+# (PipeWire / PulseAudio), PCM 16 bits stéréo 48 kHz en trames 7 de 20 ms, comme la version Windows
+# ======================================================================================
+class Sound:
+    RATE, PACKET = 48000, 48000 // 50 * 4
+
+    def __init__(self):
+        self.pipe, self.module = None, None
+
+    def ensure_output(self):
+        """PC sans haut-parleur (sortie HDMI éteinte, serveur) : sortie virtuelle « iPad (bSideDesk) » pour que les
+        applis aient où jouer le son, que l'iPad récupère."""
+        sink = run('pactl', 'get-default-sink').stdout.strip()
+        if sink and sink != 'auto_null':
+            return sink
+        if 'bsidedesk_ipad' not in run('pactl', 'list', 'short', 'sinks').stdout:
+            r = run('pactl', 'load-module', 'module-null-sink', 'sink_name=bsidedesk_ipad',
+                    'sink_properties=device.description="iPad (bSideDesk)"')
+            self.module = r.stdout.strip() or None
+        run('pactl', 'set-default-sink', 'bsidedesk_ipad')
+        return 'bsidedesk_ipad'
+
+    def start(self, session):
+        self.stop()
+        try:
+            sink = self.ensure_output()
+            pipe = Gst.parse_launch(
+                'pulsesrc device=@DEFAULT_MONITOR@ client-name=bSideDesk buffer-time=60000 latency-time=10000 ! '
+                'audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved ! '
+                'appsink name=a sync=false emit-signals=false max-buffers=50 drop=true')
+        except GLib.Error as e:
+            log(f'son du PC impossible : {e.message}')
+            return
+        self.pipe = pipe
+        session.send(f'SND FMT {self.RATE} 2')
+        pipe.set_state(Gst.State.PLAYING)
+        log(f"son du PC vers l'iPad (sortie « {sink} », 48000 Hz, 2 canaux)")
+        threading.Thread(target=self.pump, args=(pipe, session), daemon=True).start()
+
+    def pump(self, pipe, session):
+        sink, buf = pipe.get_by_name('a'), b''
+        while self.pipe is pipe and not session.closed:
+            sample = sink.emit('try-pull-sample', 200 * Gst.MSECOND)
+            if sample is None:
+                continue
+            b = sample.get_buffer()
+            ok, info = b.map(Gst.MapFlags.READ)
+            if not ok:
+                continue
+            buf += bytes(info.data)
+            b.unmap(info)
+            while len(buf) >= self.PACKET:
+                session.frame(7, buf[:self.PACKET])
+                buf = buf[self.PACKET:]
+        pipe.set_state(Gst.State.NULL)
+
+    def stop(self):
+        p, self.pipe = self.pipe, None
+        if p is not None:
+            log("son du PC vers l'iPad arrêté")
+        if self.module:   # sortie virtuelle retirée : le son revient sur les haut-parleurs du PC (HDMI…)
+            run('pactl', 'unload-module', self.module)
+            self.module = None
+
+
+# ======================================================================================
 # Gestes et commandes reçus de l'iPad
 # ======================================================================================
 KEYSYMS = {'ctrl': 0xffe3, 'shift': 0xffe1, 'alt': 0xffe9, 'win': 0xffeb, 'super': 0xffeb, 'altgr': 0xfe03,
@@ -624,6 +690,65 @@ KEYSYMS = {'ctrl': 0xffe3, 'shift': 0xffe1, 'alt': 0xffe9, 'win': 0xffeb, 'super
            'volup': 0x1008ff13, 'voldown': 0x1008ff11, 'mute': 0x1008ff12, 'playpause': 0x1008ff14, 'next': 0x1008ff17,
            'prev': 0x1008ff16, 'stop': 0x1008ff15, 'nummul': 0xffaa, 'numadd': 0xffab, 'numsub': 0xffad, 'numdec': 0xffae, 'numdiv': 0xffaf}
 BTN_LEFT, BTN_RIGHT = 0x110, 0x111
+# touches de modification (codes evdev) : niveau 1 = Maj, niveau 2 = AltGr, niveau 3 = Maj + AltGr
+EV_MODS = {'ctrl': 29, 'shift': 42, 'alt': 56, 'win': 125, 'super': 125, 'altgr': 100}
+EV_SHIFT, EV_ALTGR = 42, 100
+
+
+class XkbMap:
+    """Table caractère -> (touche evdev, niveau) pour la disposition de clavier active de GNOME (libxkbcommon)."""
+    def __init__(self, layout='us', variant='', options=''):
+        lib = ctypes.CDLL('libxkbcommon.so.0')
+        class Names(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_char_p) for n in ('rules', 'model', 'layout', 'variant', 'options')]
+        lib.xkb_context_new.restype = ctypes.c_void_p
+        lib.xkb_context_new.argtypes = [ctypes.c_int]
+        lib.xkb_keymap_new_from_names.restype = ctypes.c_void_p
+        lib.xkb_keymap_new_from_names.argtypes = [ctypes.c_void_p, ctypes.POINTER(Names), ctypes.c_int]
+        for f in ('xkb_keymap_min_keycode', 'xkb_keymap_max_keycode'):
+            getattr(lib, f).restype = ctypes.c_uint32; getattr(lib, f).argtypes = [ctypes.c_void_p]
+        lib.xkb_keymap_num_levels_for_key.restype = ctypes.c_uint32
+        lib.xkb_keymap_num_levels_for_key.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+        lib.xkb_keymap_key_get_syms_by_level.restype = ctypes.c_int
+        lib.xkb_keymap_key_get_syms_by_level.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint32))]
+        ctx = lib.xkb_context_new(0)
+        names = Names(b'evdev', b'pc105', layout.encode(), variant.encode(), options.encode())
+        km = lib.xkb_keymap_new_from_names(ctx, ctypes.byref(names), 0)
+        if not km:
+            raise RuntimeError('disposition de clavier inconnue : ' + layout)
+        self.map = {}
+        for kc in range(lib.xkb_keymap_min_keycode(km), lib.xkb_keymap_max_keycode(km) + 1):
+            for level in range(min(4, lib.xkb_keymap_num_levels_for_key(km, kc, 0))):
+                syms = ctypes.POINTER(ctypes.c_uint32)()
+                n = lib.xkb_keymap_key_get_syms_by_level(km, kc, 0, level, ctypes.byref(syms))
+                for i in range(n):
+                    ks, ev = syms[i], kc - 8
+                    if ev >= 248:   # touches spéciales hors clavier standard
+                        continue
+                    old = self.map.get(ks)
+                    # touche la plus simple : niveau le plus bas, puis hors pavé numérique (codes evdev 71-83, 96-98)
+                    keypad = 71 <= ev <= 83 or 96 <= ev <= 98
+                    score = (level, keypad, ev)
+                    if old is None or score < old[2]:
+                        self.map[ks] = (ev, level, score)
+
+    def lookup(self, ks):
+        v = self.map.get(ks)
+        return (v[0], v[1]) if v else None
+
+
+def current_keymap():
+    """Disposition de clavier de la session GNOME (Paramètres > Clavier), ex. « fr », « fr+oss », « us »."""
+    try:
+        st = Gio.Settings.new('org.gnome.desktop.input-sources')
+        src = [v for t, v in st.get_value('sources').unpack() if t == 'xkb'] or ['us']
+        layout, _, variant = src[0].partition('+')
+        m = XkbMap(layout, variant, ','.join(st.get_strv('xkb-options')))
+        log(f'clavier : disposition « {src[0]} »')
+        return m
+    except Exception as e:  # noqa: BLE001
+        log(f'disposition du clavier inconnue ({e}) : touches envoyées par symbole')
+        return None
 
 
 def keysym(name):
@@ -651,6 +776,7 @@ def char_keysym(c):
 class Input:
     def __init__(self, app):
         self.app, self.screen, self.wheel, self.zoom = app, app.screen, 0, 0
+        self.keymap = None   # chargée au premier caractère tapé
         self.left = False
 
     @property
@@ -667,19 +793,56 @@ class Input:
     def key(self, sym, down):
         self.screen.notify('NotifyKeyboardKeysym', '(ub)', sym, down)
 
+    def code(self, ev, down):
+        self.screen.notify('NotifyKeyboardKeycode', '(ub)', ev, down)
+
+    # Les caractères sont tapés par touches physiques, d'après la disposition du clavier de GNOME (AZERTY…) :
+    # par symbole, GNOME 43 oublie parfois Maj / AltGr (chiffres, majuscules, @, #…).
+    def where(self, sym):
+        if self.keymap is None:
+            self.keymap = current_keymap() or False
+        return self.keymap.lookup(sym) if self.keymap else None
+
+    @staticmethod
+    def level_mods(level):
+        return ([EV_SHIFT] if level in (1, 3) else []) + ([EV_ALTGR] if level >= 2 else [])
+
+    def tap_sym(self, sym, held=()):
+        loc = self.where(sym)
+        if not loc:   # caractère absent de la disposition : GNOME le cherche lui-même
+            self.key(sym, True)
+            self.key(sym, False)
+            return
+        ev, level = loc
+        mods = [m for m in self.level_mods(level) if m not in held]
+        for m in mods:
+            self.code(m, True)
+        self.code(ev, True)
+        self.code(ev, False)
+        for m in reversed(mods):
+            self.code(m, False)
+
     def combo(self, text):
-        syms = [keysym(x) for x in text.split('+') if x]
-        syms = [s for s in syms if s is not None]
-        for s in syms:
-            self.key(s, True)
-        for s in reversed(syms):
-            self.key(s, False)
+        parts = [x for x in text.lower().split('+') if x]
+        if not parts:
+            return
+        mods = [EV_MODS[x] for x in parts[:-1] if x in EV_MODS]
+        last = parts[-1]
+        for m in mods:
+            self.code(m, True)
+        if last in EV_MODS:   # touche de modification seule (ex. « win » : Activités)
+            self.code(EV_MODS[last], True)
+            self.code(EV_MODS[last], False)
+        else:
+            sym = keysym(last)
+            if sym is not None:
+                self.tap_sym(sym, held=mods)
+        for m in reversed(mods):
+            self.code(m, False)
 
     def type_text(self, text):
         for ch in text:
-            s = char_keysym(ch)
-            self.key(s, True)
-            self.key(s, False)
+            self.tap_sym(char_keysym(ch))
 
     def touch(self, parts):
         """« F id:x:y:d|m|u|c … » : vrai multi-touch dans GNOME (gestes à 3 et 4 doigts compris)."""
@@ -740,16 +903,15 @@ class Input:
                 self.screen.notify('NotifyPointerAxis', '(ddu)', 0.0, -int(p[1]) / 120.0 * 10.0, 1 << 3)
             elif k == 'Z' and len(p) >= 2:
                 n = int(p[1])
-                self.key(KEYSYMS['ctrl'], True)
+                self.code(EV_MODS['ctrl'], True)
                 self.screen.notify('NotifyPointerAxisDiscrete', '(ui)', 0, -1 if n > 0 else 1)
-                self.key(KEYSYMS['ctrl'], False)
+                self.code(EV_MODS['ctrl'], False)
             elif k == 'KS' and len(p) >= 2:
                 self.combo(urllib.parse.unquote(p[1]))
             elif k == 'T' and len(p) >= 2:
                 self.type_text(urllib.parse.unquote(' '.join(p[1:])))
             elif k == 'K' and len(p) >= 2:
-                s = 0xff08 if p[1] == 'BACK' else 0xff0d
-                self.key(s, True); self.key(s, False)
+                self.tap_sym(0xff08 if p[1] == 'BACK' else 0xff0d)
             else:
                 self.app.command(p)
         except (ValueError, IndexError):
@@ -892,6 +1054,12 @@ class App:
         self.input = Input(self)
         self.pairing = Pairing(self)
         self.focus = FocusWatcher(self)
+        self.sound = Sound()
+        try:   # disposition de clavier changée dans GNOME : on recharge la table des touches
+            self.kb_settings = Gio.Settings.new('org.gnome.desktop.input-sources')
+            self.kb_settings.connect('changed::sources', lambda *a: setattr(self.input, 'keymap', None))
+        except Exception:  # noqa: BLE001
+            self.kb_settings = None
         self.screen.on_clip_text = self.clip_to_ipad
         self.session = None
         self.wanted = True
@@ -1068,6 +1236,7 @@ class App:
                 log("iPad passé sur un autre PC : en veille")
             self.standby = True
             self.input.release()
+            self.sound.stop()
             self.streamer.restart()
         elif k == 'ACTIVE':
             if self.standby:
@@ -1082,6 +1251,11 @@ class App:
             if s:
                 s.close()
             self.streamer.restart()
+        elif k == 'SND' and len(p) >= 2:
+            if p[1] == 'START' and s and not self.standby:
+                self.sound.start(s)
+            elif p[1] == 'STOP':
+                self.sound.stop()
         elif k == 'CB' and len(p) >= 2:   # texte copié sur l'iPad ou sur l'autre PC
             if self.cfg.get('clipboard', True):
                 self.screen.set_text(urllib.parse.unquote(' '.join(p[1:])))
@@ -1202,6 +1376,7 @@ class App:
                 if lasted < 3:
                     time.sleep(3)
             self.screen.stop()
+            self.sound.stop()
             log('écran virtuel retiré')
             self.session = None
             self.set_state("En attente de l'iPad")
