@@ -210,6 +210,7 @@ static NSString *MPDeviceId(void){
 @property(nonatomic,copy) void (^onSwitching)(NSString *pcName);               // fil principal : on passe d'un PC à un autre
 @property(nonatomic,copy) void (^onClosed)(void);                              // fil principal : plus aucun PC
 @property(nonatomic,copy) void (^onPCsChanged)(void);                          // fil principal : liste des PC connectés modifiée
+@property(nonatomic,copy) void (^onStandbyLine)(NSString *line);               // fil principal : ligne d'un PC en veille (presse-papiers)
 @property(nonatomic,copy) void (^onPairing)(NSString *pcName,NSString *code);  // fil principal : afficher le code
 @property(nonatomic,copy) void (^onNotice)(NSString *title,NSString *text,BOOL ok); // fil principal : résultat / alerte
 @property(nonatomic,copy) void (^onVideoStart)(int fd);                        // fil réseau : nouveau flux à décoder
@@ -405,6 +406,7 @@ static NSString *MPDeviceId(void){
     } else if(!self.isActive){
      // PC en veille : il garde la liaison ouverte (une ligne « Q » par seconde), on répond pour qu'il sache que l'iPad est là
      if([k isEqualToString:@"Q"])[self enqueue:1 data:[@"P 0" dataUsingEncoding:NSUTF8StringEncoding]];
+     else if([k isEqualToString:@"CB"])[self ui:^{if(self.hub.onStandbyLine)self.hub.onStandbyLine(line);}];   // copie faite sur ce PC : vers le PC affiché
     } else if([k isEqualToString:@"V"]&&p.count>=2){
      [self endVideo];
      if([p[1] isEqualToString:@"NEW"]){
@@ -1020,7 +1022,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 // (dégradé cyan → bleu → violet, courbe lumineuse, verre dépoli).
 @interface MPHomeView : UIView
 @property(nonatomic,readonly) UILabel *addressLabel,*lastPCLabel;
-@property(nonatomic,readonly) UIButton *settingsButton;
+@property(nonatomic,readonly) UIButton *settingsButton,*backButton;   // backButton : accueil ouvert par-dessus l'écran du PC
 @property(nonatomic,copy) void (^onFeature)(NSString *key);       // tuile de fonction touchée
 @property(nonatomic,copy) void (^onPickPC)(NSUInteger index);     // PC connecté touché : l'afficher
 - (void)setPCs:(NSArray<NSArray*>*)pcs;                           // @[nom, @(actif)] pour chaque PC connecté
@@ -1210,6 +1212,18 @@ static NSArray<NSArray<NSString*>*> *MPFeatures(void){
  _settingsButton.layer.borderColor=[UIColor colorWithWhite:1 alpha:.32].CGColor;
  _settingsButton.contentEdgeInsets=UIEdgeInsetsMake(9,20,9,20);
  [self addSubview:_settingsButton];
+ // Bouton « Revenir à l'écran » (accueil ouvert par-dessus l'écran du PC, bouton « Accueil » de la Touch Bar)
+ _backButton=[UIButton buttonWithType:UIButtonTypeSystem];
+ _backButton.translatesAutoresizingMaskIntoConstraints=NO;
+ [_backButton setTitle:@"‹  Revenir à l'écran du PC" forState:UIControlStateNormal];
+ [_backButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+ _backButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+ _backButton.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];
+ _backButton.layer.cornerRadius=20;_backButton.layer.borderWidth=1;
+ _backButton.layer.borderColor=[UIColor colorWithWhite:1 alpha:.4].CGColor;
+ _backButton.contentEdgeInsets=UIEdgeInsetsMake(9,18,9,20);
+ _backButton.hidden=YES;
+ [self addSubview:_backButton];
 
  // Pied de page
  UILabel *gestures=MPLabel(@"1 doigt : clic  ·  2 doigts : défilement  ·  3 doigts : clavier  ·  4 doigts : réglages",13,UIFontWeightMedium,.72,.3);
@@ -1240,6 +1254,7 @@ static NSArray<NSArray<NSString*>*> *MPFeatures(void){
   [gestures.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[gestures.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-22],
   [version.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[version.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
   [_settingsButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[_settingsButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:28],
+  [_backButton.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:28],[_backButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:28],
  ]];
  return self;
 }
@@ -2069,7 +2084,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  MPCamera *_camera;
  MPMic *_mic;
  MPCameraView *_camView;
- NSInteger _clipCount;
+ NSInteger _clipCount;BOOL _clipPush;
  MPSecureServer *_input;
  MPTouchView *_touch;
  NSNetService *_bonjour;
@@ -2131,6 +2146,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [_bar setTitle:_tbTitle items:_tbItems];
  _bar.onAction=^(NSString *keys){
   if([keys isEqualToString:@"@pc"])[weakInput activateNext];   // PC suivant
+  else if([keys isEqualToString:@"@home"])[w showHomeOverlay];
   else if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
   else if([keys isEqualToString:@"@numpad"])[w showNumpad];
   else if([keys isEqualToString:@"@keyboard"]){typeof(self) s=w;if(s){if(s->_touch.isFirstResponder)[s->_touch resignFirstResponder];else [s showKeyboard];}}
@@ -2156,6 +2172,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  _home.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
  [_home.settingsButton addTarget:self action:@selector(showSettings) forControlEvents:UIControlEventTouchUpInside];
  _home.onFeature=^(NSString *key){[w homeFeature:key];};
+ [_home.backButton addTarget:self action:@selector(hideHomeOverlay) forControlEvents:UIControlEventTouchUpInside];
  _home.onPickPC=^(NSUInteger i){typeof(self) s=w;if(!s)return;NSArray *ls=s->_input.links;if(i<ls.count)[s->_input activate:ls[i]];};
  [_home setPCs:@[]];
  [self.view addSubview:_home];
@@ -2173,6 +2190,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  // plusieurs PC : bascule de l'un à l'autre (bouton « ⇄ » de la Touch Bar)
  _input.onSwitching=^(NSString *pc){[w switchingTo:pc];};
  _input.onPCsChanged=^{[w refreshBar];};
+ _input.onStandbyLine=^(NSString *line){[w standbyLine:line];};
  [_input start];
  [self applyPreferences];
  [self refreshLastPC];
@@ -2220,7 +2238,8 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (void)soundOff {_soundOn=NO;[_speaker stop];}
 - (void)controlConnected {
  _soundOn=NO;[self syncSound];
- _clipCount=UIPasteboard.generalPasteboard.changeCount;   // on ne pousse pas l'ancien contenu à la connexion
+ // première connexion : on ne pousse pas l'ancien contenu ; bascule depuis un autre PC : on envoie ce qui y a été copié
+ _clipCount=_clipPush?-1:UIPasteboard.generalPasteboard.changeCount;_clipPush=NO;
  _lastRes=nil;[self sendResolution];   // taille exacte de la zone d'image : le PC y règle l'écran virtuel
  NSUserDefaults *d=MPDefaults();
  if([d boolForKey:@"qualityPending"]){
@@ -2782,10 +2801,11 @@ static NSString *MPOnMyIPad(void){
  [_home setPCs:pcs];   // page d'accueil : PC connectés, touchables
  NSMutableArray *items=[NSMutableArray arrayWithArray:_tbItems?:@[]];
  NSString *title=_tbTitle?:@"";
+ [items insertObject:@[@"⌂ Accueil",@"@home"] atIndex:0];   // page d'accueil par-dessus l'écran (fonctions, PC connectés)
  if(ls.count>1){
   MPLink *cur=_input.active;NSUInteger i=[ls indexOfObject:cur];
   MPLink *next=ls[(i==NSNotFound?0:i+1)%ls.count];
-  [items insertObject:@[[@"⇄ " stringByAppendingString:next.pcName?:@"PC"],@"@pc"] atIndex:0];
+  [items insertObject:@[[@"⇄ " stringByAppendingString:next.pcName?:@"PC"],@"@pc"] atIndex:1];
   title=[NSString stringWithFormat:@"%@ · %@",cur.pcName?:@"PC",title];
  }
  [_bar setTitle:title items:items];
@@ -2811,8 +2831,31 @@ static NSString *MPOnMyIPad(void){
  if(!c&&!help[key])t=@"Connectez d'abord un PC : ouvrez bSideDesk sur Windows ou Debian, la connexion est automatique.";
  [self showNotice:@"bSideDesk" text:t code:nil ok:YES];
 }
+// Accueil par-dessus l'écran du PC (bouton « ⌂ Accueil ») : fonctions et PC connectés, sans se déconnecter
+- (void)showHomeOverlay {
+ if(!_streaming)return;
+ MPHomeView *home=_home;
+ home.backButton.hidden=NO;home.alpha=0;home.hidden=NO;home.transform=CGAffineTransformMakeScale(1.04,1.04);
+ [self.view bringSubviewToFront:home];
+ [UIView animateWithDuration:.3 animations:^{home.alpha=1;home.transform=CGAffineTransformIdentity;}];
+}
+- (void)hideHomeOverlay {
+ MPHomeView *home=_home;
+ if(!_streaming||home.hidden)return;
+ [UIView animateWithDuration:.25 animations:^{home.alpha=0;home.transform=CGAffineTransformMakeScale(1.04,1.04);}
+                  completion:^(BOOL done){if(done&&home.alpha==0){home.hidden=YES;home.backButton.hidden=YES;}}];
+}
+// Presse-papiers partagé entre PC : une copie faite sur un PC en veille arrive dans le presse-papiers de l'iPad,
+// puis part vers le PC affiché au prochain tour de clipboardTick (on ne met pas _clipCount à jour exprès)
+- (void)standbyLine:(NSString*)line {
+ NSArray *p=[line componentsSeparatedByString:@" "];
+ if(p.count>=2&&[p[0] isEqualToString:@"CB"]&&[MPDefaults() boolForKey:@"clipboard"])
+  UIPasteboard.generalPasteboard.string=[p[1] stringByRemovingPercentEncoding]?:@"";
+}
 // Bascule vers un autre PC : rideau jusqu'à la première image du nouveau PC
 - (void)switchingTo:(NSString*)pc {
+ _clipPush=YES;   // le presse-papiers (copié sur l'autre PC) sera envoyé au PC qui s'affiche
+ [self hideHomeOverlay];
  [self sensorsOff:NO];[self soundOff];
  if(_streaming)[self showCurtain];
  [self showNotice:@"Changement de PC" text:[NSString stringWithFormat:@"Affichage de « %@ »…",pc?:@"PC"] code:nil ok:YES];
@@ -2919,6 +2962,7 @@ static NSString *MPOnMyIPad(void){
  } else {
   [_video flushAndRemoveImage];
   _rotating=NO;[_curtain.layer removeAllAnimations];[_curtain removeFromSuperview];
+  home.backButton.hidden=YES;
   home.hidden=NO;
   [UIView animateWithDuration:.45 animations:^{home.alpha=1;home.transform=CGAffineTransformIdentity;}];
  }

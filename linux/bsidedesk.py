@@ -322,6 +322,7 @@ class VirtualScreen:
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.rd_path = self.sc_path = self.stream = None
         self.node, self.node_ready, self.sub = None, threading.Event(), None
+        self.clip_subs, self.clip_text, self.on_clip_text = [], None, None
 
     def _call(self, name, path, iface, method, args=None, rtype=None):
         return self.bus.call_sync(name, path, iface, method, args, GLib.VariantType(rtype) if rtype else None,
@@ -348,12 +349,16 @@ class VirtualScreen:
         self._call(self.RD, self.rd_path, self.RD + '.Session', 'Start')
         if not self.node_ready.wait(5):
             raise RuntimeError("GNOME n'a pas créé l'écran virtuel (flux PipeWire absent)")
+        self.enable_clipboard()
         return self.node
 
     def stop(self):
         if self.sub is not None:
             self.bus.signal_unsubscribe(self.sub)
             self.sub = None
+        for sub in self.clip_subs:
+            self.bus.signal_unsubscribe(sub)
+        self.clip_subs = []
         if self.rd_path:
             try:
                 self._call(self.RD, self.rd_path, self.RD + '.Session', 'Stop')
@@ -364,6 +369,95 @@ class VirtualScreen:
     @property
     def active(self):
         return self.rd_path is not None
+
+    # ---- presse-papiers de GNOME, via la session RemoteDesktop (le seul accès autorisé sous Wayland) ----
+    TEXT_MIMES = ['text/plain;charset=utf-8', 'UTF8_STRING', 'text/plain', 'STRING', 'TEXT']
+
+    def enable_clipboard(self):
+        try:
+            self._call(self.RD, self.rd_path, self.RD + '.Session', 'EnableClipboard', GLib.Variant('(a{sv})', ({},)))
+        except GLib.Error as e:
+            log(f'presse-papiers indisponible : {e.message}')
+            return
+        for name, cb in (('SelectionOwnerChanged', self._owner_changed), ('SelectionTransfer', self._transfer)):
+            self.clip_subs.append(self.bus.signal_subscribe(self.RD, self.RD + '.Session', name, self.rd_path, None,
+                                                            Gio.DBusSignalFlags.NONE, cb))
+        if self.clip_text:   # texte reçu de l'iPad pendant que l'écran se créait
+            self.set_text(self.clip_text)
+
+    def set_text(self, text):
+        """Texte copié sur l'iPad (ou sur l'autre PC) : bSideDesk devient le propriétaire du presse-papiers de GNOME."""
+        self.clip_text = text
+        if not self.rd_path:
+            return
+        try:
+            self._call(self.RD, self.rd_path, self.RD + '.Session', 'SetSelection',
+                       GLib.Variant('(a{sv})', ({'mime-types': GLib.Variant('as', self.TEXT_MIMES)},)))
+        except GLib.Error as e:
+            log(f'presse-papiers : {e.message}')
+
+    def _owner_changed(self, conn, sender, path, iface, signal, params):
+        opts = params.unpack()[0]
+        if opts.get('session-is-owner'):
+            return   # c'est nous (texte venu de l'iPad)
+        mimes = opts.get('mime-types') or []
+        mime = next((m for m in self.TEXT_MIMES if m in mimes), None)
+        if mime:
+            threading.Thread(target=self._read, args=(mime, path), daemon=True).start()
+
+    def _read(self, mime, path):
+        """Une appli de GNOME a copié du texte : on le lit pour l'envoyer à l'iPad."""
+        try:
+            res, fds = self.bus.call_with_unix_fd_list_sync(self.RD, path, self.RD + '.Session', 'SelectionRead',
+                                                            GLib.Variant('(s)', (mime,)), GLib.VariantType('(h)'),
+                                                            Gio.DBusCallFlags.NONE, 5000, None, None)
+            fd = fds.get(res.unpack()[0])
+            data, end = b'', time.time() + 3
+            try:
+                while time.time() < end and len(data) < 1_000_000:
+                    r, _, _ = select.select([fd], [], [], 0.5)
+                    if not r:
+                        continue
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                os.close(fd)
+            text = data.decode('utf-8', errors='replace').rstrip('\x00')
+            if text and text != self.clip_text:
+                self.clip_text = text
+                if self.on_clip_text:
+                    self.on_clip_text(text)
+        except (GLib.Error, OSError) as e:
+            log(f'lecture du presse-papiers impossible : {getattr(e, "message", e)}')
+
+    def _transfer(self, conn, sender, path, iface, signal, params):
+        mime, serial = params.unpack()
+        threading.Thread(target=self._write, args=(serial, path), daemon=True).start()
+
+    def _write(self, serial, path):
+        """Une appli de GNOME colle : on lui donne le texte venu de l'iPad."""
+        ok = False
+        try:
+            res, fds = self.bus.call_with_unix_fd_list_sync(self.RD, path, self.RD + '.Session', 'SelectionWrite',
+                                                            GLib.Variant('(u)', (serial,)), GLib.VariantType('(h)'),
+                                                            Gio.DBusCallFlags.NONE, 5000, None, None)
+            fd = fds.get(res.unpack()[0])
+            try:
+                data = (self.clip_text or '').encode('utf-8')
+                while data:
+                    n = os.write(fd, data)
+                    data = data[n:]
+                ok = True
+            finally:
+                os.close(fd)
+        except (GLib.Error, OSError) as e:
+            log(f'écriture du presse-papiers impossible : {getattr(e, "message", e)}')
+        try:
+            self._call(self.RD, path, self.RD + '.Session', 'SelectionWriteDone', GLib.Variant('(ub)', (serial, ok)))
+        except GLib.Error:
+            pass
 
     # ---- disposition des écrans (Paramètres > Écrans de GNOME, appliquée sans l'enregistrer) ----
     DC = 'org.gnome.Mutter.DisplayConfig'
@@ -798,6 +892,7 @@ class App:
         self.input = Input(self)
         self.pairing = Pairing(self)
         self.focus = FocusWatcher(self)
+        self.screen.on_clip_text = self.clip_to_ipad
         self.session = None
         self.wanted = True
         self.size = (self.cfg['width'], self.cfg['height'])
@@ -810,6 +905,12 @@ class App:
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
         if os.environ.get('XDG_SESSION_TYPE') != 'wayland':
             log("attention : bSideDesk pour Linux utilise l'écran virtuel de GNOME sous Wayland")
+
+    def clip_to_ipad(self, text):
+        """Texte copié dans une appli de GNOME : vers l'iPad (qui le passe au PC affiché ensuite)."""
+        s = self.session
+        if s and not s.closed and not self.standby and self.cfg.get('clipboard', True) and len(text) < 500000:
+            s.send('CB ' + urllib.parse.quote(text))
 
     # ---------- icône ----------
     def build_tray(self):
@@ -981,6 +1082,9 @@ class App:
             if s:
                 s.close()
             self.streamer.restart()
+        elif k == 'CB' and len(p) >= 2:   # texte copié sur l'iPad ou sur l'autre PC
+            if self.cfg.get('clipboard', True):
+                self.screen.set_text(urllib.parse.unquote(' '.join(p[1:])))
         elif k == 'S' and len(p) >= 3:
             self.cfg['fps'], self.cfg['mbps'] = int(p[1]), int(p[2])
             save_config(self.cfg)
