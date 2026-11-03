@@ -504,7 +504,10 @@ class VirtualScreen:
             except ValueError:
                 pass
         conf = [(0, 0, scale, 0, True, [(virt, mode[0], {})])]
-        x = int(w / scale)
+        # disposition « physique » (GNOME par défaut, layout-mode 2) : positions en pixels réels ;
+        # « logique » (1) : positions divisées par l'échelle. Mal calculées, GNOME refuse (écrans qui se chevauchent).
+        physical = state[3].get('layout-mode', 2) != 1
+        x = w if physical else int(w / scale)
         if nudge:
             # changement d'écrans « normal » (comme brancher / débrancher l'écran HDMI) : GNOME recale alors toutes
             # les fenêtres, y compris celles en plein écran, sur la nouvelle taille de l'écran de l'iPad
@@ -514,6 +517,8 @@ class VirtualScreen:
                         conf.append((x, 0, 1.0, 0, False, [(conn, md[0], {})]))
                         x += md[1]
                         break
+                else:
+                    raise RuntimeError('aucun autre écran (HDMI) connu de GNOME : ' + ', '.join(current))
             ipad_only = True   # écrans allumés -> éteints, ou l'inverse : il suffit que la disposition change
         elif not ipad_only:
             old = {lm[5][0][0]: lm for lm in logical if lm[5]}
@@ -522,7 +527,7 @@ class VirtualScreen:
                     continue
                 lm = old[conn]
                 conf.append((x, 0, lm[2], lm[3], False, [(conn, md[0], {})]))
-                x += int(md[1] / lm[2])
+                x += md[1] if physical else int(md[1] / lm[2])
         self._call(self.DC, '/org/gnome/Mutter/DisplayConfig', self.DC, 'ApplyMonitorsConfig',
                    GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', (serial, 1, conf, {})))
         return f"écran principal ×{scale:g}" + (', autres écrans éteints' if ipad_only else '')
@@ -1317,13 +1322,17 @@ class App:
         only, scale = self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))
         try:
             log("écran de l'iPad : " + self.screen.layout(only, scale, size))
-            if inplace and self.cfg.get('refit_fullscreen', True):
-                self.refit_fullscreen(only, scale, size)
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
             if self.resizing_inplace and size == self.size:
                 self.inplace_failed("GNOME n'a pas changé la taille de l'écran")
             else:
                 log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
+            return
+        if inplace and self.cfg.get('refit_fullscreen', True):
+            try:   # à part : un échec ici ne doit pas faire abandonner le redimensionnement sur place
+                self.refit_fullscreen(only, scale, size)
+            except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
+                log(f"recalage des fenêtres plein écran impossible : {getattr(e, 'message', e)}")
 
     REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
 
@@ -1333,8 +1342,9 @@ class App:
         Témoin sur le disque : si GNOME plantait pendant l'opération, elle serait désactivée au redémarrage."""
         try:
             open(self.REFIT_MARK, 'w').close()
+            time.sleep(0.8)   # laisser l'application finir de suivre la première modification
             self.screen.layout(only, scale, size, nudge=True)
-            time.sleep(0.6)
+            time.sleep(0.8)
             self.screen.layout(only, scale, size)
             log('fenêtres plein écran recalées')
         finally:
