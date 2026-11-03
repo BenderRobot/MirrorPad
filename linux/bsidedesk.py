@@ -787,7 +787,9 @@ def current_keymap():
     """Disposition de clavier de la session GNOME (Paramètres > Clavier), ex. « fr », « fr+oss », « us »."""
     try:
         st = Gio.Settings.new('org.gnome.desktop.input-sources')
-        src = [v for t, v in st.get_value('sources').unpack() if t == 'xkb'] or ['us']
+        # disposition ACTIVE (première des « récentes ») plutôt que la première de la liste
+        mru = [v for t, v in st.get_value('mru-sources').unpack() if t == 'xkb']
+        src = mru[:1] or [v for t, v in st.get_value('sources').unpack() if t == 'xkb'] or ['us']
         layout, _, variant = src[0].partition('+')
         m = XkbMap(layout, variant, ','.join(st.get_strv('xkb-options')))
         log(f'clavier : disposition « {src[0]} »')
@@ -1103,7 +1105,8 @@ class App:
         self.sound = Sound()
         try:   # disposition de clavier changée dans GNOME : on recharge la table des touches
             self.kb_settings = Gio.Settings.new('org.gnome.desktop.input-sources')
-            self.kb_settings.connect('changed::sources', lambda *a: setattr(self.input, 'keymap', None))
+            for key in ('sources', 'mru-sources'):   # disposition ajoutée ou changée (Super+Espace) : table refaite
+                self.kb_settings.connect('changed::' + key, lambda *a: setattr(self.input, 'keymap', None))
         except Exception:  # noqa: BLE001
             self.kb_settings = None
         self.screen.on_clip_text = self.clip_to_ipad

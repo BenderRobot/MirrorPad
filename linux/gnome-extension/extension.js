@@ -10,8 +10,7 @@ class BSideDeskExtension {
     enable() {
         this._timers = [];
         this._sig = Main.layoutManager.connect('monitors-changed', () => {
-            this._schedule();
-            this._scheduleReenter();
+            this._schedule();   // (relance automatique du plein écran de Firefox retirée : elle quittait le plein écran)
         });
         // entrée / sortie du plein écran : on revérifie aussi (et on retire notre correction si elle ne sert plus)
         this._fsSig = global.display.connect('in-fullscreen-changed', () => this._schedule());

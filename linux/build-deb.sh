@@ -29,6 +29,12 @@ install -m 644 ../windows/bSideDesk.png "$R/usr/share/pixmaps/bsidedesk.png"
 # extension GNOME : recale les fenêtres plein écran après une rotation de l'iPad
 mkdir -p "$R/usr/share/gnome-shell/extensions/bsidedesk@bsidedesk.fr"
 install -m 644 gnome-extension/metadata.json gnome-extension/extension.js "$R/usr/share/gnome-shell/extensions/bsidedesk@bsidedesk.fr/"
+# Chromium : Wayland natif (suit la rotation de l'iPad, net à ×2) et accessibilité des pages (clavier auto)
+mkdir -p "$R/etc/chromium.d"
+cat > "$R/etc/chromium.d/bsidedesk" <<'CHR'
+# Ajouté par bSideDesk : Chromium en Wayland natif et accessibilité des pages (clavier automatique de l'iPad)
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland --force-renderer-accessibility"
+CHR
 install -m 644 fr.bsidedesk.update.policy "$R/usr/share/polkit-1/actions/fr.bsidedesk.update.policy"
 # mises à jour par le système (root), même sans session ouverte : au démarrage puis toutes les 30 min
 mkdir -p "$R/lib/systemd/system"
