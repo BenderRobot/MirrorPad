@@ -641,8 +641,15 @@ class Sound:
         self.stop()
         try:
             sink = self.ensure_output()
+            # on écoute la SORTIE son (« .monitor »), jamais un micro : sinon le micro du PC entend le haut-parleur
+            # de l'iPad et ça siffle (effet Larsen)
+            monitor = sink + '.monitor'
+            sources = run('pactl', 'list', 'short', 'sources').stdout.split()
+            if monitor not in sources:
+                log(f"son du PC impossible : pas de retour de la sortie « {sink} » ({monitor} absent)")
+                return
             pipe = Gst.parse_launch(
-                'pulsesrc device=@DEFAULT_MONITOR@ client-name=bSideDesk buffer-time=60000 latency-time=10000 ! '
+                f'pulsesrc device={monitor} client-name=bSideDesk buffer-time=60000 latency-time=10000 ! '
                 'audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved ! '
                 'appsink name=a sync=false emit-signals=false max-buffers=50 drop=true')
         except GLib.Error as e:
@@ -651,7 +658,7 @@ class Sound:
         self.pipe = pipe
         session.send(f'SND FMT {self.RATE} 2')
         pipe.set_state(Gst.State.PLAYING)
-        log(f"son du PC vers l'iPad (sortie « {sink} », 48000 Hz, 2 canaux)")
+        log(f"son du PC vers l'iPad (écoute de « {monitor} », 48000 Hz, 2 canaux)")
         threading.Thread(target=self.pump, args=(pipe, session), daemon=True).start()
 
     def pump(self, pipe, session):
