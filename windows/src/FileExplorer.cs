@@ -75,7 +75,7 @@ namespace bSideDesk
             padList = NewList();
             padList.ItemActivate += (s, e) => { var it = Sel(padList).FirstOrDefault(); if (it != null && ((Entry)it.Tag).Dir) ListPad(Join(padDir, ((Entry)it.Tag).Name)); };
             padList.FilesDropped = files => SendToPad(files);   // glisser depuis l'Explorateur Windows
-            var padBar = Toolbar("iPad › bSideDesk", Btn("↑", () => ListPad(ParentPad(padDir)), 34), padPath, Btn("⟳", () => ListPad(padDir), 34), Btn("Nouveau dossier", NewPadFolder, 0));
+            var padBar = Toolbar("Sur mon iPad › bSideDesk", Btn("↑", () => ListPad(ParentPad(padDir)), 34), padPath, Btn("⟳", () => ListPad(padDir), 34), Btn("Nouveau dossier", NewPadFolder, 0));
             right.Controls.Add(padList); right.Controls.Add(padBar);
 
             var split = new SplitContainer { Dock = DockStyle.Fill, SplitterWidth = 6, BackColor = Line };
@@ -177,7 +177,7 @@ namespace bSideDesk
         {
             if (SendLine == null) return;
             padDir = dir;
-            padPath.Text = "iPad › bSideDesk" + (dir == "/" ? "" : dir.Replace("/", " › "));
+            padPath.Text = "Sur mon iPad › bSideDesk" + (dir == "/" ? "" : dir.Replace("/", " › "));
             int id = Interlocked.Increment(ref listId);
             SendLine("FS LIST " + id + " " + Uri.EscapeDataString(dir));
         }
@@ -197,7 +197,7 @@ namespace bSideDesk
                 case "ITEMS":
                     int id; if (p.Length < 4 || !int.TryParse(p[2], out id) || id != listId) return;
                     padDir = Uri.UnescapeDataString(p[3]);
-                    padPath.Text = "iPad › bSideDesk" + (padDir == "/" ? "" : padDir.Replace("/", " › "));
+                    padPath.Text = "Sur mon iPad › bSideDesk" + (padDir == "/" ? "" : padDir.Replace("/", " › "));
                     var items = new List<ListViewItem>();
                     foreach (var raw in p.Skip(4))
                     {

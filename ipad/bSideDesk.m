@@ -2255,13 +2255,39 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [self presentViewController:a animated:YES completion:nil];
 }
 
-#pragma mark Explorateur de fichiers du PC (« Fichiers de l'iPad ») : dossier Documents/bSideDesk de l'iPad
+#pragma mark Explorateur de fichiers du PC : dossier « Fichiers > Sur mon iPad > bSideDesk » de l'iPad
 // Lignes du PC : « FS LIST id dossier », « FS MKDIR dossier », « FS DEL chemin », « FS REN chemin nouveauNom »,
 // « FS GET jeton chemin » (fichier ou dossier envoyé au PC en trames 8, nommées « jeton|chemin relatif »).
 // Réponses : « FS ITEMS id dossier nom|d|taille|date … », « FS OK », « FS ERR texte », « FS DONE chemin » (fichier reçu).
+// Dossier visible dans l'app Fichiers de l'iPad : « Sur mon iPad » est le stockage du fournisseur de fichiers local
+// (conteneur partagé group.com.apple.FileProvider.LocalStorage). L'app n'ayant pas de bac à sable sur l'iPad
+// jailbreaké, elle peut y écrire directement : « Fichiers > Sur mon iPad > bSideDesk ».
+static NSString *MPOnMyIPad(void){
+ static NSString *found;static dispatch_once_t once;
+ dispatch_once(&once,^{
+  NSString *base=@"/var/mobile/Containers/Shared/AppGroup";
+  for(NSString *u in [NSFileManager.defaultManager contentsOfDirectoryAtPath:base error:nil]){
+   NSString *dir=[base stringByAppendingPathComponent:u];
+   NSDictionary *meta=[NSDictionary dictionaryWithContentsOfFile:[dir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"]];
+   if([meta[@"MCMMetadataIdentifier"] isEqualToString:@"group.com.apple.FileProvider.LocalStorage"]){
+    NSString *storage=[dir stringByAppendingPathComponent:@"File Provider Storage"];
+    if([NSFileManager.defaultManager fileExistsAtPath:storage]){found=storage;break;}
+   }
+  }
+  NSLog(@"bSideDesk: dossier « Sur mon iPad » %@",found?:@"introuvable");
+ });
+ return found;
+}
 - (NSString*)fsRoot {
- NSString *r=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bSideDesk"];
- [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
+ NSFileManager *fm=NSFileManager.defaultManager;
+ NSString *old=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bSideDesk"];
+ NSString *ls=MPOnMyIPad(),*r=ls?[ls stringByAppendingPathComponent:@"bSideDesk"]:old;
+ if(![fm fileExistsAtPath:r]){
+  [fm createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
+  // fichiers déjà reçus dans l'ancien dossier (invisible dans Fichiers) : déplacés une fois
+  if(![r isEqualToString:old])for(NSString *n in [fm contentsOfDirectoryAtPath:old error:nil])
+   [fm moveItemAtPath:[old stringByAppendingPathComponent:n] toPath:[r stringByAppendingPathComponent:n] error:nil];
+ }
  return r;
 }
 // chemin relatif (« / » = racine) -> chemin réel, sans jamais sortir du dossier bSideDesk

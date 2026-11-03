@@ -132,7 +132,7 @@ Lignes iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `F id:x:y:d|m|u|c …`, `PD/PM
 Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q saturation% débit`, `SC …` (raccourcis),
 `TB titre libellé|touches …` (Touch Bar), `KB 1 x y w h` / `KB 0` (clavier auto), `SND FMT rate 2`,
 `DB cpu ramUtilisée ramTotale envoiKo réceptionKo disque% minutes nomPC`, `DBX nom|ok|détail …`, `CB texte`, `MSG texte`, `P n`,
-`FS LIST id dossier`, `FS MKDIR dossier`, `FS DEL chemin`, `FS REN chemin nom`, `FS GET jeton chemin` (dossier `Documents/bSideDesk` de l'iPad ;
+`FS LIST id dossier`, `FS MKDIR dossier`, `FS DEL chemin`, `FS REN chemin nom`, `FS GET jeton chemin` (dossier « Fichiers > Sur mon iPad > bSideDesk » de l'iPad ;
 fichiers PC → iPad nommés `@/dossier/nom`, iPad → PC nommés `jeton|chemin`).
 
 ## Linux (Debian, session X11)
