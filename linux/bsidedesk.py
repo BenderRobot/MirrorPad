@@ -72,7 +72,8 @@ def run(*args):
 # ======================================================================================
 def load_config():
     cfg = {'ipad': '', 'fps': 60, 'mbps': 12, 'encoder': 'auto', 'detected': '', 'width': 2048, 'height': 1536,
-           'pcid': secrets.token_hex(16), 'paired': {}, 'auto_update': True}
+           'pcid': secrets.token_hex(16), 'paired': {}, 'auto_update': True,
+           'ipad_only': True, 'scale': 'auto'}   # PC sans écran : l'iPad seul, interface agrandie ×2
     old = os.path.join(GLib.get_user_config_dir(), 'mirrorpad')   # ancien nom de l'app
     if not os.path.isdir(DIR) and os.path.isdir(old):
         import shutil
@@ -355,6 +356,60 @@ class VirtualScreen:
     @property
     def active(self):
         return self.rd_path is not None
+
+    # ---- disposition des écrans (Paramètres > Écrans de GNOME, appliquée sans l'enregistrer) ----
+    DC = 'org.gnome.Mutter.DisplayConfig'
+
+    def layout(self, ipad_only, scale_pref):
+        """Écran de l'iPad en écran principal (barre du haut, dock, bureau), interface ×2, autres écrans éteints
+        (ipad_only) ou placés à sa droite. Réglage temporaire : GNOME revient à sa disposition au départ de l'iPad."""
+        state = None
+        for _ in range(60):   # l'écran virtuel apparaît quand la capture démarre
+            state = self._call(self.DC, '/org/gnome/Mutter/DisplayConfig', self.DC, 'GetCurrentState', None,
+                               '(ua((ssss)a(siiddada{sv})a{sv})a(iiduba(ssss)a{sv})a{sv})').unpack()
+            if any(self._is_virtual(m[0]) for m in state[1]):
+                break
+            time.sleep(0.1)
+        serial, monitors, logical = state[0], state[1], state[2]
+        current = {}
+        for spec, modes, props in monitors:
+            mode = next((m for m in modes if m[6].get('is-current')), None) or next((m for m in modes if m[6].get('is-preferred')), modes[0] if modes else None)
+            if mode:
+                current[spec[0]] = (spec, mode)
+        virt = next((c for c, (spec, mode) in current.items() if self._is_virtual(spec)), None)
+        if not virt:
+            raise RuntimeError("écran de l'iPad absent de la configuration de GNOME")
+        spec, mode = current[virt]
+        w, h, scales = mode[1], mode[2], mode[5]
+        scale = 1.0
+        if scale_pref == 'auto':
+            for sc in (2.0,):
+                if any(abs(x - sc) < 0.01 for x in scales) and w % 2 == 0 and h % 2 == 0:
+                    scale = sc
+        else:
+            try:
+                want = float(scale_pref)
+                scale = min(scales, key=lambda x: abs(x - want)) if scales else 1.0
+            except ValueError:
+                pass
+        conf = [(0, 0, scale, 0, True, [(virt, mode[0], {})])]
+        x = int(w / scale)
+        if not ipad_only:
+            old = {lm[5][0][0]: lm for lm in logical if lm[5]}
+            for conn, (sp, md) in current.items():
+                if conn == virt or conn not in old:
+                    continue
+                lm = old[conn]
+                conf.append((x, 0, lm[2], lm[3], False, [(conn, md[0], {})]))
+                x += int(md[1] / lm[2])
+        self._call(self.DC, '/org/gnome/Mutter/DisplayConfig', self.DC, 'ApplyMonitorsConfig',
+                   GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', (serial, 1, conf, {})))
+        return f"écran principal ×{scale:g}" + (', autres écrans éteints' if ipad_only else '')
+
+    @staticmethod
+    def _is_virtual(spec):
+        conn, vendor, product = spec[0], spec[1], spec[2]
+        return conn.startswith('Meta-') or 'Virtual' in product or vendor == 'MetaVendor'
 
     # ---- gestes : messages sans réponse attendue (rapides, dans l'ordre) ----
     def notify(self, method, sig, *args):
@@ -746,11 +801,17 @@ class App:
         enc.set_active_id(self.cfg['encoder'])
         upd = Gtk.CheckButton(label='Mises à jour automatiques')
         upd.set_active(self.cfg.get('auto_update', True))
+        only = Gtk.CheckButton(label="iPad seul écran (éteint les autres pendant la connexion)")
+        only.set_active(self.cfg.get('ipad_only', True))
+        big = Gtk.CheckButton(label="Interface agrandie ×2 sur l'iPad (recommandé)")
+        big.set_active(str(self.cfg.get('scale', 'auto')) != '1')
         for i, (label, w) in enumerate((("Adresse de l'iPad", ip), ('Fluidité', fps), ('Débit (Mb/s)', mbps), ('Encodeur', enc))):
             lab = Gtk.Label(label=label, xalign=0)
             grid.attach(lab, 0, i, 1, 1)
             grid.attach(w, 1, i, 1, 1)
         grid.attach(upd, 0, 4, 2, 1)
+        grid.attach(only, 0, 5, 2, 1)
+        grid.attach(big, 0, 6, 2, 1)
         box.add(grid)
         box.add(Gtk.Label(label='iPad appairés', xalign=0))
         store = Gtk.ListStore(str, str)
@@ -777,6 +838,10 @@ class App:
             if enc.get_active_id() != self.cfg['encoder']:
                 self.cfg['encoder'], self.cfg['detected'] = enc.get_active_id(), ''
             self.cfg['auto_update'] = upd.get_active()
+            self.cfg['ipad_only'] = only.get_active()
+            self.cfg['scale'] = 'auto' if big.get_active() else '1'
+            if self.session and not self.session.closed:
+                threading.Thread(target=self.apply_layout, daemon=True).start()
             save_config(self.cfg)
             self.streamer.restart()
         d.destroy()
@@ -804,16 +869,37 @@ class App:
             log(f"qualité demandée par l'iPad : {p[1]} i/s, {p[2]} Mb/s")
             self.streamer.restart()
 
+    def apply_layout(self):
+        try:
+            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))))
+        except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
+            log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
+
+    def keepalive(self, session):
+        """Une ligne par seconde vers l'iPad (débit pour son panneau d'infos) : il répond « P », la liaison reste vivante."""
+        while not session.closed:
+            session.send(f"Q 0 {self.cfg['mbps']}")
+            if time.time() - session.last_rx > 30:
+                log("l'iPad ne répond plus depuis 30 s : déconnexion")
+                session.close()
+                break
+            time.sleep(1)
+
     def read_loop(self, session):
+        reason = ''
+        session.sock.settimeout(None)   # le silence est surveillé par keepalive()
         try:
             while not session.closed:
                 t, d = session.read_frame()
+                session.last_rx = time.time()
                 if t == 1:
                     for line in d.decode(errors='replace').split('\n'):
                         if line:
                             self.input.handle(line)
-        except (OSError, ConnectionError, ValueError):
-            pass
+        except (OSError, ConnectionError, ValueError) as e:
+            reason = str(e)
+        if not session.closed:
+            log('session terminée' + (' : ' + reason if reason else ''))
         session.close()
         self.input.release()
 
@@ -857,7 +943,9 @@ class App:
                 continue
             fails = 0
             self.session, self.sleeping = session, False
+            session.last_rx = time.time()
             threading.Thread(target=self.read_loop, args=(session,), daemon=True).start()
+            threading.Thread(target=self.keepalive, args=(session,), daemon=True).start()
             session.send('N ' + socket.gethostname())
             session.send('SC ' + ' '.join(urllib.parse.quote(f'{l}|{c}') for l, c in self.cfg.get('shortcuts', DEFAULT_SHORTCUTS)))
             session.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
@@ -873,6 +961,7 @@ class App:
                     continue
                 log(f'écran virtuel {self.size[0]}x{self.size[1]} créé (flux PipeWire {node})')
                 self.set_state(f'Connecté : {session.name} · {self.size[0]}x{self.size[1]}')
+                threading.Thread(target=self.apply_layout, daemon=True).start()
                 try:
                     lasted = self.streamer.run(session, node, *self.size)
                 except GLib.Error as e:
