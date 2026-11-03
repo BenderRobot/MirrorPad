@@ -1021,15 +1021,92 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
 @interface MPHomeView : UIView
 @property(nonatomic,readonly) UILabel *addressLabel,*lastPCLabel;
 @property(nonatomic,readonly) UIButton *settingsButton;
+@property(nonatomic,copy) void (^onFeature)(NSString *key);       // tuile de fonction touchée
+@property(nonatomic,copy) void (^onPickPC)(NSUInteger index);     // PC connecté touché : l'afficher
+- (void)setPCs:(NSArray<NSArray*>*)pcs;                           // @[nom, @(actif)] pour chaque PC connecté
 @end
 @implementation MPHomeView {
- UIStackView *_main;
+ UIStackView *_main,*_pcList,*_grid;
+ UILabel *_pcCaption;
+ NSLayoutConstraint *_gridWidth;
+ NSArray<NSString*> *_featureKeys;
  CAGradientLayer *_bg,*_orbA,*_orbB,*_cardShine;
  CAShapeLayer *_wave1,*_wave2;
  UIView *_logoWrap,*_dotView,*_card;
  CALayer *_halo;
  BOOL _animated;
 }
+// Fonctions de l'app : [icône, titre, description, clé]
+static NSArray<NSArray<NSString*>*> *MPFeatures(void){
+ return @[@[@"🖥",@"Écran étendu",@"Paysage, portrait, sans bandes noires",@"screen"],
+          @[@"👆",@"Tactile et gestes",@"Souris, multi-touch, 3 et 4 doigts",@"touch"],
+          @[@"✏️",@"Stylet",@"Dessin avec pression, gomme",@"pen"],
+          @[@"🎛",@"Touch Bar",@"Raccourcis de l'appli active",@"touchbar"],
+          @[@"⌨️",@"Clavier",@"S'ouvre sur les zones de saisie",@"keyboard"],
+          @[@"📷",@"Webcam",@"La caméra de l'iPad pour le PC",@"camera"],
+          @[@"🎙",@"Micro",@"Le micro de l'iPad pour le PC",@"mic"],
+          @[@"🔊",@"Son du PC",@"Sur les haut-parleurs de l'iPad",@"sound"],
+          @[@"📁",@"Fichiers",@"Envoyer, recevoir, double explorateur",@"files"],
+          @[@"📋",@"Presse-papiers",@"Texte et images partagés",@"clipboard"],
+          @[@"📊",@"Tableau de bord",@"Processeur, mémoire, réseau",@"dashboard"],
+          @[@"⇄",@"Plusieurs PC",@"Windows et Linux, bascule instantanée",@"multipc"]];
+}
+- (UIControl*)tile:(NSArray<NSString*>*)f index:(NSUInteger)i {
+ UIControl *t=[UIControl new];t.translatesAutoresizingMaskIntoConstraints=NO;t.tag=(NSInteger)i;
+ t.backgroundColor=[UIColor colorWithWhite:1 alpha:.12];t.layer.cornerRadius=18;
+ t.layer.borderWidth=1;t.layer.borderColor=[UIColor colorWithWhite:1 alpha:.24].CGColor;
+ UILabel *icon=MPLabel(f[0],26,UIFontWeightRegular,1,0);
+ UILabel *name=MPLabel(f[1],15,UIFontWeightSemibold,1,.2);
+ UILabel *desc=MPLabel(f[2],12,UIFontWeightRegular,.75,0);desc.numberOfLines=2;
+ UIStackView *txt=[[UIStackView alloc] initWithArrangedSubviews:@[name,desc]];txt.axis=UILayoutConstraintAxisVertical;txt.spacing=2;
+ UIStackView *row=[[UIStackView alloc] initWithArrangedSubviews:@[icon,txt]];row.spacing=10;row.alignment=UIStackViewAlignmentCenter;
+ row.translatesAutoresizingMaskIntoConstraints=NO;row.userInteractionEnabled=NO;
+ [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+ [t addSubview:row];
+ [NSLayoutConstraint activateConstraints:@[[t.heightAnchor constraintEqualToConstant:62],
+  [row.leadingAnchor constraintEqualToAnchor:t.leadingAnchor constant:14],[row.trailingAnchor constraintLessThanOrEqualToAnchor:t.trailingAnchor constant:-10],
+  [row.centerYAnchor constraintEqualToAnchor:t.centerYAnchor]]];
+ [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
+ [t addTarget:self action:@selector(tileDown:) forControlEvents:UIControlEventTouchDown];
+ [t addTarget:self action:@selector(tileUp:) forControlEvents:UIControlEventTouchUpOutside|UIControlEventTouchCancel|UIControlEventTouchUpInside];
+ return t;
+}
+- (void)buildGrid:(NSUInteger)cols {
+ for(UIView *v in _grid.arrangedSubviews){[_grid removeArrangedSubview:v];[v removeFromSuperview];}
+ NSArray *feats=MPFeatures();NSMutableArray *keys=[NSMutableArray array];
+ UIStackView *row=nil;
+ for(NSUInteger i=0;i<feats.count;i++){
+  if(i%cols==0){row=[UIStackView new];row.axis=UILayoutConstraintAxisHorizontal;row.distribution=UIStackViewDistributionFillEqually;row.spacing=10;[_grid addArrangedSubview:row];}
+  [keys addObject:feats[i][3]];
+  [row addArrangedSubview:[self tile:feats[i] index:i]];
+ }
+ _featureKeys=keys;
+}
+- (void)tileDown:(UIControl*)t {[UIView animateWithDuration:.12 animations:^{t.transform=CGAffineTransformMakeScale(.96,.96);t.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];}];}
+- (void)tileUp:(UIControl*)t {[UIView animateWithDuration:.2 animations:^{t.transform=CGAffineTransformIdentity;t.backgroundColor=[UIColor colorWithWhite:1 alpha:.12];}];}
+- (void)tileTapped:(UIControl*)t {if(self.onFeature&&t.tag<(NSInteger)_featureKeys.count)self.onFeature(_featureKeys[(NSUInteger)t.tag]);}
+// PC connectés : une ligne par PC (le PC affiché en premier plan, les autres « en veille », touchables)
+- (void)setPCs:(NSArray<NSArray*>*)pcs {
+ for(UIView *v in _pcList.arrangedSubviews){[_pcList removeArrangedSubview:v];[v removeFromSuperview];}
+ _pcCaption.text=pcs.count?@"PC CONNECTÉS":@"AUCUN PC CONNECTÉ";
+ NSUInteger i=0;
+ for(NSArray *pc in pcs){
+  BOOL on=[pc[1] boolValue];
+  UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
+  [b setTitle:[NSString stringWithFormat:@"%@  %@  ·  %@",on?@"●":@"○",pc[0],on?@"affiché":@"en veille, toucher pour afficher"] forState:UIControlStateNormal];
+  [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+  b.titleLabel.font=[UIFont systemFontOfSize:17 weight:on?UIFontWeightSemibold:UIFontWeightRegular];
+  b.contentHorizontalAlignment=UIControlContentHorizontalAlignmentLeft;
+  b.tag=(NSInteger)i++;
+  [b addTarget:self action:@selector(pcTapped:) forControlEvents:UIControlEventTouchUpInside];
+  [_pcList addArrangedSubview:b];
+ }
+ if(!pcs.count){
+  UILabel *l=MPLabel(@"Ouvrez bSideDesk sur le PC (Windows ou Debian) : la connexion est automatique.",15,UIFontWeightRegular,.80,0);
+  l.numberOfLines=2;[_pcList addArrangedSubview:l];
+ }
+}
+- (void)pcTapped:(UIButton*)b {if(self.onPickPC)self.onPickPC((NSUInteger)b.tag);}
 - (instancetype)initWithFrame:(CGRect)frame {
  if(!(self=[super initWithFrame:frame]))return nil;
  self.clipsToBounds=YES;
@@ -1057,14 +1134,15 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _logoWrap.layer.shadowRadius=34;_logoWrap.layer.shadowOffset=CGSizeMake(0,22);
  UIImageView *logo=[[UIImageView alloc] initWithImage:[UIImage imageNamed:@"Logo"]];
  logo.translatesAutoresizingMaskIntoConstraints=NO;logo.contentMode=UIViewContentModeScaleAspectFill;
- logo.layer.cornerRadius=48;logo.layer.masksToBounds=YES;
+ logo.layer.cornerRadius=20;logo.layer.masksToBounds=YES;
  logo.layer.borderWidth=1.5;logo.layer.borderColor=[UIColor colorWithWhite:1 alpha:.45].CGColor;
  [_logoWrap addSubview:logo];
 
  // Textes
- UILabel *eyebrow=MPLabel(@"ÉCRAN SUPPLÉMENTAIRE",13,UIFontWeightSemibold,.78,3);
- UILabel *title=MPLabel(@"bSideDesk",64,UIFontWeightBold,1,-1.2);
- UILabel *subtitle=MPLabel(@"Votre iPad, un écran de plus pour votre PC.",21,UIFontWeightRegular,.86,0);
+ UILabel *eyebrow=MPLabel(@"LE BUREAU D'À CÔTÉ",13,UIFontWeightSemibold,.78,3);
+ UILabel *title=MPLabel(@"bSideDesk",56,UIFontWeightBold,1,-1.2);
+ UILabel *subtitle=MPLabel(@"Écran tactile, Touch Bar, webcam, micro, son et fichiers\npour vos PC Windows et Linux.",19,UIFontWeightRegular,.86,0);
+ subtitle.numberOfLines=2;
 
  // Pastille d'état avec point qui pulse
  UIView *pill=[UIView new];pill.translatesAutoresizingMaskIntoConstraints=NO;
@@ -1084,31 +1162,32 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  _cardShine=[CAGradientLayer layer];
  _cardShine.colors=@[(id)[UIColor colorWithWhite:1 alpha:.20].CGColor,(id)[UIColor colorWithWhite:1 alpha:0].CGColor];
  _cardShine.startPoint=CGPointMake(0,0);_cardShine.endPoint=CGPointMake(.6,1);
- _cardShine.frame=CGRectMake(0,0,470,320); // la carte fait 470 de large ; le surplus est rogné
+ _cardShine.frame=CGRectMake(0,0,440,360); // la carte fait 440 de large ; le surplus est rogné
  [_card.layer addSublayer:_cardShine];
  UILabel *caption=MPLabel(@"ADRESSE DE CET IPAD",12,UIFontWeightSemibold,.72,2.4);
  _addressLabel=[UILabel new];
- _addressLabel.font=[UIFont monospacedDigitSystemFontOfSize:44 weight:UIFontWeightSemibold];
+ _addressLabel.font=[UIFont monospacedDigitSystemFontOfSize:34 weight:UIFontWeightSemibold];
  _addressLabel.textColor=UIColor.whiteColor;_addressLabel.adjustsFontSizeToFitWidth=YES;_addressLabel.minimumScaleFactor=.6;
  UIView *sep=[UIView new];sep.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];
  [sep.heightAnchor constraintEqualToConstant:1].active=YES;
- UILabel *hint=MPLabel([NSString stringWithFormat:@"Port %d  ·  Ouvrez bSideDesk sur le PC, la connexion est automatique.",MP_PORT],15,UIFontWeightRegular,.80,0);
- UIStackView *cardStack=[[UIStackView alloc] initWithArrangedSubviews:@[caption,_addressLabel,sep,hint]];
+ _pcCaption=MPLabel(@"AUCUN PC CONNECTÉ",12,UIFontWeightSemibold,.72,2.4);
+ _pcList=[UIStackView new];_pcList.axis=UILayoutConstraintAxisVertical;_pcList.spacing=4;_pcList.alignment=UIStackViewAlignmentLeading;
+ UIStackView *cardStack=[[UIStackView alloc] initWithArrangedSubviews:@[caption,_addressLabel,sep,_pcCaption,_pcList]];
  cardStack.axis=UILayoutConstraintAxisVertical;cardStack.spacing=10;cardStack.translatesAutoresizingMaskIntoConstraints=NO;
  [cardStack setCustomSpacing:16 afterView:_addressLabel];
  [_card addSubview:cardStack];
 
- UIStackView *text=[[UIStackView alloc] initWithArrangedSubviews:@[eyebrow,title,subtitle,pill,_card]];
+ UIStackView *text=[[UIStackView alloc] initWithArrangedSubviews:@[_logoWrap,eyebrow,title,subtitle,pill,_card]];
  text.axis=UILayoutConstraintAxisVertical;text.alignment=UIStackViewAlignmentLeading;text.spacing=12;
- [text setCustomSpacing:2 afterView:eyebrow];[text setCustomSpacing:22 afterView:subtitle];[text setCustomSpacing:26 afterView:pill];
+ [text setCustomSpacing:18 afterView:_logoWrap];[text setCustomSpacing:2 afterView:eyebrow];[text setCustomSpacing:22 afterView:subtitle];[text setCustomSpacing:26 afterView:pill];
 
  _lastPCLabel=MPLabel(@" ",15,UIFontWeightMedium,.85,.2);
  _lastPCLabel.hidden=YES;
  [text addArrangedSubview:_lastPCLabel];
  [text setCustomSpacing:14 afterView:_card];
 
- UIStackView *main=[[UIStackView alloc] initWithArrangedSubviews:@[_logoWrap,text]];
- main.axis=UILayoutConstraintAxisHorizontal;main.alignment=UIStackViewAlignmentCenter;main.spacing=64;
+ UIStackView *main=[[UIStackView alloc] initWithArrangedSubviews:@[text]];
+ main.axis=UILayoutConstraintAxisHorizontal;main.alignment=UIStackViewAlignmentCenter;main.spacing=40;
  main.translatesAutoresizingMaskIntoConstraints=NO;
  _main=main;
  [self addSubview:main];
@@ -1126,15 +1205,20 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  [self addSubview:_settingsButton];
 
  // Pied de page
- UILabel *gestures=MPLabel(@"1 doigt : clic   ·   glisser : sélectionner   ·   2 doigts : clic droit et défilement",14,UIFontWeightMedium,.72,.3);
+ UILabel *gestures=MPLabel(@"1 doigt : clic  ·  2 doigts : défilement  ·  3 doigts : clavier  ·  4 doigts : réglages",13,UIFontWeightMedium,.72,.3);
  gestures.textAlignment=NSTextAlignmentCenter;gestures.translatesAutoresizingMaskIntoConstraints=NO;
  [self addSubview:gestures];
+ // Grille des fonctions (touchables : ouvre la fonction quand un PC est connecté, sinon l'explique)
+ _grid=[UIStackView new];_grid.axis=UILayoutConstraintAxisVertical;_grid.spacing=10;_grid.translatesAutoresizingMaskIntoConstraints=NO;
+ _gridWidth=[_grid.widthAnchor constraintEqualToConstant:470];_gridWidth.active=YES;
+ [self buildGrid:2];
+ [_main addArrangedSubview:_grid];
  NSString *v=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"";
  UILabel *version=MPLabel([@"v" stringByAppendingString:v],13,UIFontWeightMedium,.5,.5);
  version.translatesAutoresizingMaskIntoConstraints=NO;[self addSubview:version];
 
  [NSLayoutConstraint activateConstraints:@[
-  [_logoWrap.widthAnchor constraintEqualToConstant:220],[_logoWrap.heightAnchor constraintEqualToConstant:220],
+  [_logoWrap.widthAnchor constraintEqualToConstant:84],[_logoWrap.heightAnchor constraintEqualToConstant:84],
   [logo.leadingAnchor constraintEqualToAnchor:_logoWrap.leadingAnchor],[logo.trailingAnchor constraintEqualToAnchor:_logoWrap.trailingAnchor],
   [logo.topAnchor constraintEqualToAnchor:_logoWrap.topAnchor],[logo.bottomAnchor constraintEqualToAnchor:_logoWrap.bottomAnchor],
   [pill.heightAnchor constraintEqualToConstant:38],
@@ -1142,11 +1226,11 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
   [_dotView.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:16],[_dotView.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
   [state.leadingAnchor constraintEqualToAnchor:_dotView.trailingAnchor constant:10],[state.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
   [state.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-18],
-  [_card.widthAnchor constraintEqualToConstant:470],
+  [_card.widthAnchor constraintEqualToConstant:440],
   [cardStack.topAnchor constraintEqualToAnchor:_card.topAnchor constant:24],[cardStack.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor constant:-24],
   [cardStack.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:28],[cardStack.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:-28],
-  [main.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[main.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-18],
-  [gestures.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[gestures.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
+  [main.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[main.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-10],
+  [gestures.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],[gestures.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-22],
   [version.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[version.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-30],
   [_settingsButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-28],[_settingsButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:28],
  ]];
@@ -1157,7 +1241,10 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
  // paysage : logo à gauche du texte ; portrait : logo au-dessus
  UILayoutConstraintAxis axis=h>w?UILayoutConstraintAxisVertical:UILayoutConstraintAxisHorizontal;
- if(_main.axis!=axis){_main.axis=axis;_main.spacing=h>w?40:64;}
+ if(_main.axis!=axis){
+  _main.axis=axis;_main.spacing=h>w?28:40;
+  [self buildGrid:h>w?3:2];_gridWidth.constant=h>w?MIN(700,w-56):470;   // portrait : 3 colonnes sous le texte
+ }
  [CATransaction begin];[CATransaction setDisableActions:YES];
  _bg.frame=self.bounds;
  _orbA.frame=CGRectMake(-w*.18,-h*.35,w*.75,w*.75);
@@ -1171,7 +1258,7 @@ static CABasicAnimation *MPLoop(NSString *key,id from,id to,CFTimeInterval d){
  [l moveToPoint:CGPointMake(-20,h*.70)];
  [l addCurveToPoint:CGPointMake(w+20,h*.20) controlPoint1:CGPointMake(w*.30,h*.95) controlPoint2:CGPointMake(w*.60,h*.18)];
  _wave2.path=l.CGPath;
- _logoWrap.layer.shadowPath=[UIBezierPath bezierPathWithRoundedRect:_logoWrap.bounds cornerRadius:48].CGPath;
+ _logoWrap.layer.shadowPath=[UIBezierPath bezierPathWithRoundedRect:_logoWrap.bounds cornerRadius:20].CGPath;
  [CATransaction commit];
 }
 - (void)didMoveToWindow {
@@ -2061,6 +2148,9 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  _home=[[MPHomeView alloc] initWithFrame:self.view.bounds];
  _home.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
  [_home.settingsButton addTarget:self action:@selector(showSettings) forControlEvents:UIControlEventTouchUpInside];
+ _home.onFeature=^(NSString *key){[w homeFeature:key];};
+ _home.onPickPC=^(NSUInteger i){typeof(self) s=w;if(!s)return;NSArray *ls=s->_input.links;if(i<ls.count)[s->_input activate:ls[i]];};
+ [_home setPCs:@[]];
  [self.view addSubview:_home];
 
  _input.onAuthenticated=^(NSString *pc){(void)pc;[w controlConnected];};
@@ -2680,6 +2770,9 @@ static NSString *MPOnMyIPad(void){
 // Touch Bar du PC actif ; avec plusieurs PC connectés : son nom en titre et un bouton « ⇄ autre PC » en premier
 - (void)refreshBar {
  NSArray<MPLink*> *ls=_input.links;
+ NSMutableArray *pcs=[NSMutableArray array];
+ for(MPLink *l in ls)[pcs addObject:@[l.pcName?:@"PC",@(l==_input.active)]];
+ [_home setPCs:pcs];   // page d'accueil : PC connectés, touchables
  NSMutableArray *items=[NSMutableArray arrayWithArray:_tbItems?:@[]];
  NSString *title=_tbTitle?:@"";
  if(ls.count>1){
@@ -2689,6 +2782,27 @@ static NSString *MPOnMyIPad(void){
   title=[NSString stringWithFormat:@"%@ · %@",cur.pcName?:@"PC",title];
  }
  [_bar setTitle:title items:items];
+}
+// Tuiles de la page d'accueil : la fonction si un PC est connecté, sinon une explication
+- (void)homeFeature:(NSString*)key {
+ BOOL c=_input.connected;
+ NSDictionary *help=@{
+  @"screen":@"Le PC voit l'iPad comme un vrai écran, à sa taille exacte (Touch Bar comprise), en paysage comme en portrait.",
+  @"touch":@"Mode Souris, Tactile (multi-touch natif) ou Stylet dans les réglages (4 doigts). 3 doigts : clavier. 3 doigts vers le haut : fenêtre ⇄ iPad.",
+  @"pen":@"Mode Stylet : tracé continu avec pression ; gomme dans les réglages. Deux doigts immobiles : loupe pour viser.",
+  @"touchbar":@"La bande en bas de l'écran change de boutons selon l'application active du PC. Repliable par sa languette.",
+  @"keyboard":@"Le clavier de l'iPad s'ouvre quand vous touchez une zone de saisie du PC, ou avec 3 doigts.",
+  @"sound":@"Le son du PC sort sur les haut-parleurs de l'iPad (réglage « Son du PC »).",
+  @"clipboard":@"Copier sur le PC, coller sur l'iPad, et inversement : texte et images.",
+  @"multipc":@"Connectez jusqu'à 4 PC (Windows, Debian) : le bouton « ⇄ » de la Touch Bar passe de l'un à l'autre."};
+ if([key isEqualToString:@"camera"]&&c){[self showCamera];return;}
+ if([key isEqualToString:@"mic"]&&c){[self toggleMic];return;}
+ if([key isEqualToString:@"files"]&&c){[self pickFile];return;}
+ if([key isEqualToString:@"dashboard"]&&c){[self showDashboard];return;}
+ if([key isEqualToString:@"multipc"]&&_input.links.count>1){[_input activateNext];return;}
+ NSString *t=help[key]?:@"Connectez d'abord un PC : ouvrez bSideDesk sur Windows ou Debian.";
+ if(!c&&!help[key])t=@"Connectez d'abord un PC : ouvrez bSideDesk sur Windows ou Debian, la connexion est automatique.";
+ [self showNotice:@"bSideDesk" text:t code:nil ok:YES];
 }
 // Bascule vers un autre PC : rideau jusqu'à la première image du nouveau PC
 - (void)switchingTo:(NSString*)pc {
@@ -2739,9 +2853,9 @@ static NSString *MPOnMyIPad(void){
  unsigned rg=++_rotGen;
  [_curtain.layer removeAllAnimations];
  [UIView animateWithDuration:.16 animations:^{self->_curtain.alpha=1;}];
- // sécurité : si le PC ne bascule pas (portrait non installé…), on rend la main après 8 s
+ // sécurité : si le PC ne bascule pas (portrait non installé, PC qui ne répond pas…), on rend la main après 15 s
  __weak typeof(self) w=self;
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(8*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(15*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
   typeof(self) s=w;if(s&&s->_rotGen==rg&&s->_rotating)[s hideCurtain];
  });
 }
