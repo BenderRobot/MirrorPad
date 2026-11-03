@@ -1115,6 +1115,7 @@ class App:
         self.sleeping = False
         self.standby = False
         self.screen_size, self.force_recreate, self.resizing_inplace = None, False, False
+        self._iface = None
         if os.path.exists(App.REFIT_MARK):   # GNOME s'est arrêté pendant un recalage : on n'en fait plus
             log('recalage des fenêtres plein écran désactivé (GNOME s\'est arrêté pendant le dernier)')
             self.cfg['refit_fullscreen'] = False
@@ -1126,6 +1127,7 @@ class App:
             save_config(self.cfg)
         self.indicator = None
         self.status_item = None
+        self.global_scale(False)   # bSideDesk arrêté brutalement pendant une session : on remet le réglage d'origine
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
         if os.environ.get('XDG_SESSION_TYPE') != 'wayland':
             log("attention : bSideDesk pour Linux utilise l'écran virtuel de GNOME sous Wayland")
@@ -1192,6 +1194,7 @@ class App:
             s.close()
         self.streamer.restart()
         self.screen.stop()
+        self.global_scale(False)
         log('bSideDesk arrêté')
         Gtk.main_quit()
 
@@ -1271,6 +1274,7 @@ class App:
             self.cfg['auto_update'] = upd.get_active()
             self.cfg['ipad_only'] = only.get_active()
             self.cfg['scale'] = 'auto' if big.get_active() else '1'
+            self.global_scale(bool(self.session and not self.session.closed and big.get_active()))
             if self.session and not self.session.closed:
                 threading.Thread(target=self.apply_layout, daemon=True).start()
             save_config(self.cfg)
@@ -1335,6 +1339,34 @@ class App:
             return
 
     REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
+
+    def global_scale(self, on):
+        """Échelle ×2 « par défaut » de GNOME (org.gnome.desktop.interface scaling-factor) pendant la session iPad.
+        À chaque rotation, GNOME recrée la configuration de l'écran virtuel avec son échelle par défaut (×1),
+        puis bSideDesk la remet à ×2 : ce passage ×1 -> ×2 laisse les fenêtres plein écran décalées.
+        Avec ×2 par défaut, la rotation se fait en une seule étape. Réglage d'origine remis au départ de l'iPad."""
+        try:
+            if self._iface is None:
+                self._iface = Gio.Settings.new('org.gnome.desktop.interface')
+            st = self._iface
+            if on:   # essai sans effet sur le décalage du plein écran : désactivé (seule la remise en état reste)
+                return
+                if 'saved_scaling_factor' not in self.cfg:
+                    self.cfg['saved_scaling_factor'] = st.get_uint('scaling-factor')
+                    save_config(self.cfg)
+                if st.get_uint('scaling-factor') != 2:
+                    st.set_uint('scaling-factor', 2)
+                    Gio.Settings.sync()
+                    log('échelle ×2 par défaut pendant la session iPad (rotation en une étape)')
+            elif 'saved_scaling_factor' in self.cfg:
+                old = int(self.cfg.pop('saved_scaling_factor'))
+                save_config(self.cfg)
+                if st.get_uint('scaling-factor') != old:
+                    st.set_uint('scaling-factor', old)
+                    Gio.Settings.sync()
+                    log(f"échelle par défaut de GNOME remise à {old or 'automatique'}")
+        except Exception as e:  # noqa: BLE001
+            log(f'échelle par défaut de GNOME : {e}')
     EXT_UUID = 'bsidedesk@bsidedesk.fr'
 
     def enable_shell_extension(self):
@@ -1463,10 +1495,12 @@ class App:
                 if self.standby:
                     if self.screen.active:
                         self.screen.stop()
+                        self.global_scale(False)
                         log('écran virtuel retiré (veille)')
                         self.set_state(f'En veille : {session.name} affiche un autre PC')
                     time.sleep(0.5)
                     continue
+                self.global_scale(True)
                 # Rotation (nouvelle taille) : on essaie d'abord de redimensionner l'écran de l'iPad SANS le recréer,
                 # pour que GNOME garde les fenêtres (plein écran compris) et le bureau. Si ce GNOME ne sait pas
                 # le faire, l'écran est recréé (les fenêtres reviennent alors sur l'écran principal).
@@ -1506,6 +1540,7 @@ class App:
                 if lasted < 3:
                     time.sleep(3)
             self.screen.stop()
+            self.global_scale(False)
             self.sound.stop()
             log('écran virtuel retiré')
             self.session = None

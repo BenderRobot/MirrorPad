@@ -1,7 +1,7 @@
 // bSideDesk : après une rotation de l'iPad (écran virtuel redimensionné), GNOME 43 laisse le contenu des fenêtres
 // plein écran décalé : il « centre » la surface de l'application comme si elle était plus petite que l'écran
 // (MetaSurfaceContainerActorWayland à -128 px), alors qu'elle fait déjà la bonne taille. On recale ce contenu.
-const { GLib } = imports.gi;
+const { Clutter, GLib } = imports.gi;
 const Main = imports.ui.main;
 
 const typeName = a => (a && a.constructor && a.constructor.$gtype) ? a.constructor.$gtype.name : '';
@@ -9,7 +9,10 @@ const typeName = a => (a && a.constructor && a.constructor.$gtype) ? a.construct
 class BSideDeskExtension {
     enable() {
         this._timers = [];
-        this._sig = Main.layoutManager.connect('monitors-changed', () => this._schedule());
+        this._sig = Main.layoutManager.connect('monitors-changed', () => {
+            this._schedule();
+            this._scheduleReenter();
+        });
         // entrée / sortie du plein écran : on revérifie aussi (et on retire notre correction si elle ne sert plus)
         this._fsSig = global.display.connect('in-fullscreen-changed', () => this._schedule());
     }
@@ -22,6 +25,10 @@ class BSideDeskExtension {
         this._sig = this._fsSig = 0;
         this._timers.forEach(id => GLib.source_remove(id));
         this._timers = [];
+        if (this._reenter)
+            GLib.source_remove(this._reenter);
+        this._reenter = 0;
+        this._kbd = null;
         if (this._idle)
             GLib.source_remove(this._idle);
         this._idle = 0;
@@ -47,6 +54,49 @@ class BSideDeskExtension {
             });
             this._timers.push(id);
         });
+    }
+
+    // Firefox garde une bande noire après une rotation en plein écran ; quitter puis remettre le plein écran
+    // l'efface. On le fait à sa place, une fois l'écran stabilisé : vidéo YouTube -> Échap puis « f » ;
+    // autre plein écran (page en F11, autre vidéo) -> F11 deux fois.
+    _scheduleReenter() {
+        if (this._reenter)
+            GLib.source_remove(this._reenter);
+        this._reenter = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
+            this._reenter = 0;
+            this._reenterFirefox();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _key(keyval) {
+        if (!this._kbd)
+            this._kbd = Clutter.get_default_backend().get_default_seat().create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+        const t = GLib.get_monotonic_time();
+        this._kbd.notify_keyval(t, keyval, Clutter.KeyState.PRESSED);
+        this._kbd.notify_keyval(t + 1000, keyval, Clutter.KeyState.RELEASED);
+    }
+
+    _reenterFirefox() {
+        for (const actor of global.get_window_actors()) {
+            const win = actor.meta_window;
+            try {
+                if (!win || !win.is_fullscreen() || !/firefox/i.test(win.get_wm_class() || ''))
+                    continue;
+                const youtube = /YouTube/.test(win.get_title() || '');
+                win.activate(global.get_current_time());   // les touches vont à la fenêtre active
+                const [first, second] = youtube ? [Clutter.KEY_Escape, Clutter.KEY_f] : [Clutter.KEY_F11, Clutter.KEY_F11];
+                this._key(first);
+                this._timers.push(GLib.timeout_add(GLib.PRIORITY_DEFAULT, youtube ? 500 : 700, () => {
+                    this._key(second);
+                    return GLib.SOURCE_REMOVE;
+                }));
+                log(`bSideDesk: plein écran de Firefox relancé après rotation (${youtube ? 'Échap puis f' : 'F11 deux fois'}) « ${win.get_title()} »`);
+                return;   // une seule fenêtre plein écran à la fois
+            } catch (e) {
+                logError(e, 'bSideDesk');
+            }
+        }
     }
 
     _soon() {
