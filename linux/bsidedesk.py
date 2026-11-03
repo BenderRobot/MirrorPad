@@ -462,14 +462,22 @@ class VirtualScreen:
     # ---- disposition des écrans (Paramètres > Écrans de GNOME, appliquée sans l'enregistrer) ----
     DC = 'org.gnome.Mutter.DisplayConfig'
 
-    def layout(self, ipad_only, scale_pref):
+    def layout(self, ipad_only, scale_pref, want=None):
         """Écran de l'iPad en écran principal (barre du haut, dock, bureau), interface ×2, autres écrans éteints
         (ipad_only) ou placés à sa droite. Réglage temporaire : GNOME revient à sa disposition au départ de l'iPad."""
+        def current_mode(modes):
+            return next((m for m in modes if m[6].get('is-current')), None)
+
+        def matches(mon):   # le NOUVEL écran de l'iPad, à la taille demandée (pas celui d'avant la rotation)
+            if not self._is_virtual(mon[0]):
+                return False
+            m = current_mode(mon[1])
+            return m is not None and (want is None or (m[1], m[2]) == tuple(want))
         state = None
-        for _ in range(60):   # l'écran virtuel apparaît quand la capture démarre
+        for _ in range(80):   # l'écran virtuel apparaît quand la capture démarre
             state = self._call(self.DC, '/org/gnome/Mutter/DisplayConfig', self.DC, 'GetCurrentState', None,
                                '(ua((ssss)a(siiddada{sv})a{sv})a(iiduba(ssss)a{sv})a{sv})').unpack()
-            if any(self._is_virtual(m[0]) for m in state[1]):
+            if any(matches(m) for m in state[1]):
                 break
             time.sleep(0.1)
         serial, monitors, logical = state[0], state[1], state[2]
@@ -478,7 +486,8 @@ class VirtualScreen:
             mode = next((m for m in modes if m[6].get('is-current')), None) or next((m for m in modes if m[6].get('is-preferred')), modes[0] if modes else None)
             if mode:
                 current[spec[0]] = (spec, mode)
-        virt = next((c for c, (spec, mode) in current.items() if self._is_virtual(spec)), None)
+        virt = next((m[0][0] for m in monitors if matches(m)), None) or \
+            next((c for c, (spec, mode) in current.items() if self._is_virtual(spec)), None)
         if not virt:
             raise RuntimeError("écran de l'iPad absent de la configuration de GNOME")
         spec, mode = current[virt]
@@ -499,7 +508,7 @@ class VirtualScreen:
         if not ipad_only:
             old = {lm[5][0][0]: lm for lm in logical if lm[5]}
             for conn, (sp, md) in current.items():
-                if conn == virt or conn not in old:
+                if conn == virt or conn not in old or self._is_virtual(sp):   # jamais un ancien écran de l'iPad
                     continue
                 lm = old[conn]
                 conf.append((x, 0, lm[2], lm[3], False, [(conn, md[0], {})]))
@@ -1289,7 +1298,7 @@ class App:
 
     def apply_layout(self):
         try:
-            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))))
+            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto')), self.size))
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
             log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
 
