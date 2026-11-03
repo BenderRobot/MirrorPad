@@ -462,7 +462,7 @@ class VirtualScreen:
     # ---- disposition des écrans (Paramètres > Écrans de GNOME, appliquée sans l'enregistrer) ----
     DC = 'org.gnome.Mutter.DisplayConfig'
 
-    def layout(self, ipad_only, scale_pref, want=None):
+    def layout(self, ipad_only, scale_pref, want=None, nudge=False):
         """Écran de l'iPad en écran principal (barre du haut, dock, bureau), interface ×2, autres écrans éteints
         (ipad_only) ou placés à sa droite. Réglage temporaire : GNOME revient à sa disposition au départ de l'iPad."""
         def current_mode(modes):
@@ -505,7 +505,17 @@ class VirtualScreen:
                 pass
         conf = [(0, 0, scale, 0, True, [(virt, mode[0], {})])]
         x = int(w / scale)
-        if not ipad_only:
+        if nudge:
+            # changement d'écrans « normal » (comme brancher / débrancher l'écran HDMI) : GNOME recale alors toutes
+            # les fenêtres, y compris celles en plein écran, sur la nouvelle taille de l'écran de l'iPad
+            if ipad_only:
+                for conn, (sp, md) in current.items():
+                    if conn != virt and not self._is_virtual(sp):
+                        conf.append((x, 0, 1.0, 0, False, [(conn, md[0], {})]))
+                        x += md[1]
+                        break
+            ipad_only = True   # écrans allumés -> éteints, ou l'inverse : il suffit que la disposition change
+        elif not ipad_only:
             old = {lm[5][0][0]: lm for lm in logical if lm[5]}
             for conn, (sp, md) in current.items():
                 if conn == virt or conn not in old or self._is_virtual(sp):   # jamais un ancien écran de l'iPad
@@ -1100,6 +1110,11 @@ class App:
         self.sleeping = False
         self.standby = False
         self.screen_size, self.force_recreate, self.resizing_inplace = None, False, False
+        if os.path.exists(App.REFIT_MARK):   # GNOME s'est arrêté pendant un recalage : on n'en fait plus
+            log('recalage des fenêtres plein écran désactivé (GNOME s\'est arrêté pendant le dernier)')
+            self.cfg['refit_fullscreen'] = False
+            save_config(self.cfg)
+            os.remove(App.REFIT_MARK)
         self.indicator = None
         self.status_item = None
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
@@ -1298,15 +1313,35 @@ class App:
             self.streamer.restart()
 
     def apply_layout(self):
-        size = self.size
+        size, inplace = self.size, self.resizing_inplace
         only, scale = self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))
         try:
             log("écran de l'iPad : " + self.screen.layout(only, scale, size))
+            if inplace and self.cfg.get('refit_fullscreen', True):
+                self.refit_fullscreen(only, scale, size)
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
             if self.resizing_inplace and size == self.size:
                 self.inplace_failed("GNOME n'a pas changé la taille de l'écran")
             else:
                 log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
+
+    REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
+
+    def refit_fullscreen(self, only, scale, size):
+        """Après une rotation : GNOME 43 ne recale pas les fenêtres plein écran (vidéo) sur l'écran redimensionné.
+        On allume puis éteint brièvement l'autre écran (HDMI), changement que GNOME gère toujours, et qui les recale.
+        Témoin sur le disque : si GNOME plantait pendant l'opération, elle serait désactivée au redémarrage."""
+        try:
+            open(self.REFIT_MARK, 'w').close()
+            self.screen.layout(only, scale, size, nudge=True)
+            time.sleep(0.6)
+            self.screen.layout(only, scale, size)
+            log('fenêtres plein écran recalées')
+        finally:
+            try:
+                os.remove(self.REFIT_MARK)
+            except OSError:
+                pass
 
     def inplace_failed(self, why):
         """Ce GNOME ne redimensionne pas l'écran virtuel : on le recrée, maintenant et aux prochaines rotations."""
