@@ -19,17 +19,20 @@ class BSideDeskExtension {
 
     _schedule() {
         // plusieurs passes : l'application suit la nouvelle taille (et l'échelle ×2) avec un peu de retard
-        for (const ms of [250, 900, 2000]) {
+        this._timers.forEach(id => GLib.source_remove(id));
+        this._timers = [];
+        [[250, 1], [900, 1], [1800, 2], [3000, 3]].forEach(([ms, step]) => {
             const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
                 this._timers = this._timers.filter(t => t !== id);
-                this._refit();
+                this._refit(step);
                 return GLib.SOURCE_REMOVE;
             });
             this._timers.push(id);
-        }
+        });
     }
 
-    _refit() {
+    // step 1 : recaler le cadre ; 2 : forcer un déplacement ; 3 : dernier recours, plein écran retiré/remis d'un coup
+    _refit(step) {
         for (const actor of global.get_window_actors()) {
             const win = actor.meta_window;
             try {
@@ -40,10 +43,24 @@ class BSideDeskExtension {
                     continue;
                 const g = global.display.get_monitor_geometry(i);
                 const f = win.get_frame_rect();
-                if (f.x === g.x && f.y === g.y && f.width === g.width && f.height === g.height)
+                const b = win.get_buffer_rect();
+                const [ax, ay] = actor.get_position();
+                const same = r => r.x === g.x && r.y === g.y && r.width === g.width && r.height === g.height;
+                const ok = same(f) && b.x === g.x && b.y === g.y && Math.round(ax) === g.x && Math.round(ay) === g.y;
+                log(`bSideDesk: passe ${step} « ${win.get_title()} » écran ${g.width}x${g.height}+${g.x}+${g.y} ` +
+                    `cadre ${f.width}x${f.height}+${f.x}+${f.y} tampon ${b.width}x${b.height}+${b.x}+${b.y} ` +
+                    `acteur +${Math.round(ax)}+${Math.round(ay)} ${ok ? 'OK' : 'décalé'}`);
+                if (ok)
                     continue;
-                log(`bSideDesk: plein écran recalé « ${win.get_title()} » ${f.width}x${f.height}+${f.x}+${f.y} -> ${g.width}x${g.height}+${g.x}+${g.y}`);
-                win.move_resize_frame(false, g.x, g.y, g.width, g.height);
+                if (step === 1) {
+                    win.move_resize_frame(false, g.x, g.y, g.width, g.height);
+                } else if (step === 2) {
+                    win.move_frame(false, g.x + 1, g.y + 1);   // un vrai déplacement : GNOME renvoie la position au client
+                    win.move_frame(false, g.x, g.y);
+                } else {
+                    win.unmake_fullscreen();
+                    win.make_fullscreen();
+                }
             } catch (e) {
                 logError(e, 'bSideDesk');
             }
