@@ -622,19 +622,30 @@ class Sound:
     RATE, PACKET = 48000, 48000 // 50 * 4
 
     def __init__(self):
-        self.pipe, self.module = None, None
+        self.pipe, self.module, self.previous = None, None, None
+        # reste d'un arrêt brutal : on retire l'ancienne sortie virtuelle (le son revient sur le PC)
+        for line in run('pactl', 'list', 'short', 'modules').stdout.splitlines():
+            if 'sink_name=bsidedesk_ipad' in line:
+                run('pactl', 'unload-module', line.split()[0])
+
+    @staticmethod
+    def move_all(sink):
+        for line in run('pactl', 'list', 'short', 'sink-inputs').stdout.splitlines():
+            if line.split():
+                run('pactl', 'move-sink-input', line.split()[0], sink)
 
     def ensure_output(self):
-        """PC sans haut-parleur (sortie HDMI éteinte, serveur) : sortie virtuelle « iPad (bSideDesk) » pour que les
-        applis aient où jouer le son, que l'iPad récupère."""
+        """Son sur l'iPad SEULEMENT : sortie virtuelle « iPad (bSideDesk) » mise par défaut et sons en cours déplacés
+        dessus (les haut-parleurs du PC se taisent) ; tout revient sur la sortie d'origine à l'arrêt (stop)."""
         sink = run('pactl', 'get-default-sink').stdout.strip()
-        if sink and sink != 'auto_null':
-            return sink
+        if sink != 'bsidedesk_ipad':
+            self.previous = sink if sink and sink != 'auto_null' else None
         if 'bsidedesk_ipad' not in run('pactl', 'list', 'short', 'sinks').stdout:
             r = run('pactl', 'load-module', 'module-null-sink', 'sink_name=bsidedesk_ipad',
                     'sink_properties=device.description="iPad (bSideDesk)"')
             self.module = r.stdout.strip() or None
         run('pactl', 'set-default-sink', 'bsidedesk_ipad')
+        self.move_all('bsidedesk_ipad')
         return 'bsidedesk_ipad'
 
     def start(self, session):
@@ -682,7 +693,11 @@ class Sound:
         p, self.pipe = self.pipe, None
         if p is not None:
             log("son du PC vers l'iPad arrêté")
-        if self.module:   # sortie virtuelle retirée : le son revient sur les haut-parleurs du PC (HDMI…)
+        if self.previous:   # le son revient sur les haut-parleurs du PC (HDMI…)
+            run('pactl', 'set-default-sink', self.previous)
+            self.move_all(self.previous)
+            self.previous = None
+        if self.module:   # sortie virtuelle retirée
             run('pactl', 'unload-module', self.module)
             self.module = None
 
