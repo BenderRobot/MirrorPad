@@ -95,6 +95,109 @@ namespace bSideDesk
             return onIPad ? "écran principal" : "iPad";
         }
 
+        // ---- Avant de débrancher l'écran de l'iPad : ses fenêtres sont rangées sur l'écran principal ----
+        // Sans ça, Windows les déplace lui-même mais garde leur taille iPad : une fenêtre agrandie ou plein écran
+        // dépasse alors en haut de l'écran et sa barre de titre (boutons fermer / réduire) devient inaccessible.
+        public class Parked { public IntPtr Hwnd; public bool Maximized; public float Rx, Ry, Rw, Rh; public System.Drawing.Rectangle PlacedAt; }
+
+        public static List<Parked> Evacuate(System.Drawing.Rectangle ipad)
+        {
+            var list = new List<Parked>();
+            if (ipad.Width <= 0) return list;
+            var wa = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
+            var hwnds = new List<IntPtr>();
+            EnumWindows((h, l) => { hwnds.Add(h); return true; }, IntPtr.Zero);
+            foreach (var h in hwnds)
+            {
+                if (!IsWindowVisible(h) || IsIconic(h)) continue;
+                long ex = GetWindowLongPtr(h, -20).ToInt64();   // GWL_EXSTYLE
+                if ((ex & 0x80) != 0) continue;                   // WS_EX_TOOLWINDOW (bulles, barres flottantes)
+                int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) continue;   // fenêtres UWP cachées
+                var cls = new StringBuilder(64); GetClassName(h, cls, 64);
+                var c = cls.ToString();
+                if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") continue;
+                RECT r; if (!GetWindowRect(h, out r)) continue;
+                int cx = (r.Left + r.Right) / 2, cy = (r.Top + r.Bottom) / 2;
+                if (!ipad.Contains(cx, cy)) continue;
+                bool max = IsZoomed(h);
+                if (max) ShowWindow(h, 4 /* SW_SHOWNOACTIVATE : taille normale */);
+                if (!GetWindowRect(h, out r)) continue;
+                int w = Math.Min(r.Right - r.Left, wa.Width - 40), hh = Math.Min(r.Bottom - r.Top, wa.Height - 40);
+                // même position relative que sur l'iPad, mais toujours entièrement visible (barre de titre comprise)
+                int nx = wa.Left + (int)((r.Left - ipad.Left) / (double)ipad.Width * wa.Width);
+                int ny = wa.Top + (int)((r.Top - ipad.Top) / (double)ipad.Height * wa.Height);
+                nx = Math.Max(wa.Left, Math.Min(nx, wa.Right - w)); ny = Math.Max(wa.Top, Math.Min(ny, wa.Bottom - hh));
+                SetWindowPos(h, IntPtr.Zero, nx, ny, w, hh, 0x0004 | 0x0010 /* NOZORDER | NOACTIVATE */);
+                if (max) ShowWindow(h, 3 /* SW_MAXIMIZE, sur l'écran principal */);
+                RECT now; GetWindowRect(h, out now);
+                list.Add(new Parked
+                {
+                    Hwnd = h, Maximized = max,
+                    Rx = (r.Left - ipad.Left) / (float)ipad.Width, Ry = (r.Top - ipad.Top) / (float)ipad.Height,
+                    Rw = (r.Right - r.Left) / (float)ipad.Width, Rh = (r.Bottom - r.Top) / (float)ipad.Height,
+                    PlacedAt = System.Drawing.Rectangle.FromLTRB(now.Left, now.Top, now.Right, now.Bottom)
+                });
+            }
+            return list;
+        }
+
+        // Retour des fenêtres rangées sur l'écran de l'iPad, s'il est rebranché et qu'on ne les a pas déplacées entre-temps
+        public static int Return(List<Parked> list, System.Drawing.Rectangle ipad)
+        {
+            int n = 0;
+            if (list == null || ipad.Width <= 0) return 0;
+            foreach (var p in list)
+            {
+                if (!IsWindow(p.Hwnd) || IsIconic(p.Hwnd)) continue;
+                RECT r; if (!GetWindowRect(p.Hwnd, out r)) continue;
+                if (System.Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom) != p.PlacedAt) continue;   // déplacée par l'utilisateur : on n'y touche pas
+                if (p.Maximized) ShowWindow(p.Hwnd, 4);
+                int w = Math.Max(300, (int)(p.Rw * ipad.Width)), h = Math.Max(200, (int)(p.Rh * ipad.Height));
+                int x = ipad.Left + (int)(p.Rx * ipad.Width), y = ipad.Top + (int)(p.Ry * ipad.Height);
+                x = Math.Max(ipad.Left, Math.Min(x, ipad.Right - w)); y = Math.Max(ipad.Top, Math.Min(y, ipad.Bottom - h));
+                SetWindowPos(p.Hwnd, IntPtr.Zero, x, y, Math.Min(w, ipad.Width), Math.Min(h, ipad.Height), 0x0004 | 0x0010);
+                if (p.Maximized) ShowWindow(p.Hwnd, 3);
+                n++;
+            }
+            return n;
+        }
+
+        // Filet de sécurité : toute fenêtre dont la barre de titre est hors de tous les écrans est ramenée en vue
+        public static int Rescue()
+        {
+            int n = 0;
+            var hwnds = new List<IntPtr>();
+            EnumWindows((h, l) => { hwnds.Add(h); return true; }, IntPtr.Zero);
+            var screens = System.Windows.Forms.Screen.AllScreens;
+            foreach (var h in hwnds)
+            {
+                if (!IsWindowVisible(h) || IsIconic(h) || IsZoomed(h)) continue;
+                long ex = GetWindowLongPtr(h, -20).ToInt64(); if ((ex & 0x80) != 0) continue;
+                int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) continue;
+                RECT r; if (!GetWindowRect(h, out r) || r.Right - r.Left < 120 || r.Bottom - r.Top < 60) continue;
+                // la barre de titre (30 px sous le haut de la fenêtre, au milieu) doit être sur un écran
+                if (screens.Any(sc => sc.WorkingArea.Contains((r.Left + r.Right) / 2, r.Top + 15))) continue;
+                var sc0 = System.Windows.Forms.Screen.FromRectangle(System.Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom)).WorkingArea;
+                int w = Math.Min(r.Right - r.Left, sc0.Width), hh = Math.Min(r.Bottom - r.Top, sc0.Height);
+                int x = Math.Max(sc0.Left, Math.Min(r.Left, sc0.Right - w)), y = Math.Max(sc0.Top, Math.Min(r.Top, sc0.Bottom - hh));
+                SetWindowPos(h, IntPtr.Zero, x, y, w, hh, 0x0004 | 0x0010);
+                n++;
+            }
+            return n;
+        }
+
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr h, int i);
+        [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
+
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);

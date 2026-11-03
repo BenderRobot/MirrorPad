@@ -299,6 +299,7 @@ namespace bSideDesk
                 extendTried = false;
                 WakeVirtual();   // l'écran virtuel revient avant l'image
                 PlaceVirtual();
+                ReturnParked();
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
                 s.BinaryReceived += HandleBinary;
@@ -323,7 +324,7 @@ namespace bSideDesk
                     if (input.VirtualMissing)
                     {
                         // écran virtuel pas (encore) sur le bureau : on ne capture surtout pas un autre écran à sa place
-                        if ((DateTime.Now - lastWake).TotalSeconds > 10) { lastWake = DateTime.Now; WakeVirtual(); PlaceVirtual(); }
+                        if ((DateTime.Now - lastWake).TotalSeconds > 10) { lastWake = DateTime.Now; WakeVirtual(); PlaceVirtual(); ReturnParked(); }
                         Thread.Sleep(500);
                         continue;
                     }
@@ -466,6 +467,19 @@ namespace bSideDesk
             }
         }
 
+        System.Collections.Generic.List<WindowMover.Parked> parked;   // fenêtres rangées sur l'écran principal au débranchement de l'iPad
+        void ReturnParked()
+        {
+            if (parked == null || cfg.VirtualDetached) return;   // écran pas encore revenu : on garde la liste
+            var list = parked; parked = null;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(2500);   // le temps que l'écran de l'iPad soit en place
+                try { input.RefreshBounds(); if (string.IsNullOrEmpty(input.TargetDevice)) return; int n = WindowMover.Return(list, input.Bounds); if (n > 0) Log.Write(n + " fenêtre(s) ramenée(s) sur l'iPad"); }
+                catch (Exception e) { Log.Write("retour des fenêtres : " + e.Message); }
+            });
+        }
+
         void SleepVirtual(bool onlyIfAbsent = false)
         {
             if (!cfg.SleepWithIPad) return;
@@ -478,11 +492,19 @@ namespace bSideDesk
                 var dev = input.TargetDevice;
                 int x, y, w, h;
                 if (string.IsNullOrEmpty(dev) || !Displays.IsVirtual(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
+                // ses fenêtres d'abord : rangées entières sur l'écran principal (et ramenées au retour de l'iPad)
+                try
+                {
+                    var moved = WindowMover.Evacuate(new Rectangle(x, y, w, h));
+                    if (moved.Count > 0) { parked = moved; Log.Write(moved.Count + " fenêtre(s) de l'iPad rangée(s) sur l'écran principal"); Thread.Sleep(300); }
+                }
+                catch (Exception ex) { Log.Write("rangement des fenêtres : " + ex.Message); }
                 int r = Native.DetachDisplay(dev);
                 if (r != 0) { Log.Write("impossible de retirer l'écran virtuel (code " + r + ")"); return; }
                 cfg.VirtualDevice = dev; cfg.VirtualX = x; cfg.VirtualY = y; cfg.VirtualW = w; cfg.VirtualH = h; cfg.VirtualDetached = true;
                 cfg.Save();
                 Log.Write("écran virtuel retiré (" + dev + ", " + w + "x" + h + " en " + x + "," + y + ")");
+                ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(2000); try { int n = WindowMover.Rescue(); if (n > 0) Log.Write(n + " fenêtre(s) hors écran ramenée(s) en vue"); } catch { } });
             }
         }
 
