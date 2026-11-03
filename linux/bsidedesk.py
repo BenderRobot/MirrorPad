@@ -1099,6 +1099,7 @@ class App:
         self.state = 'Démarrage…'
         self.sleeping = False
         self.standby = False
+        self.screen_size, self.force_recreate, self.resizing_inplace = None, False, False
         self.indicator = None
         self.status_item = None
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
@@ -1297,10 +1298,24 @@ class App:
             self.streamer.restart()
 
     def apply_layout(self):
+        size = self.size
         try:
-            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto')), self.size))
+            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto')), size))
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
-            log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
+            if self.resizing_inplace and size == self.size:
+                self.inplace_failed("GNOME n'a pas changé la taille de l'écran")
+            else:
+                log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
+
+    def inplace_failed(self, why):
+        """Ce GNOME ne redimensionne pas l'écran virtuel : on le recrée, maintenant et aux prochaines rotations."""
+        if self.force_recreate:
+            return
+        log(f"redimensionnement sur place impossible ({why}) : l'écran est recréé à chaque rotation")
+        self.cfg['resize_inplace'] = False
+        save_config(self.cfg)
+        self.force_recreate = True
+        self.streamer.restart()
 
     def keepalive(self, session):
         """Une ligne par seconde vers l'iPad (débit pour son panneau d'infos) : il répond « P », la liaison reste vivante."""
@@ -1386,15 +1401,28 @@ class App:
                         self.set_state(f'En veille : {session.name} affiche un autre PC')
                     time.sleep(0.5)
                     continue
+                # Rotation (nouvelle taille) : on essaie d'abord de redimensionner l'écran de l'iPad SANS le recréer,
+                # pour que GNOME garde les fenêtres (plein écran compris) et le bureau. Si ce GNOME ne sait pas
+                # le faire, l'écran est recréé (les fenêtres reviennent alors sur l'écran principal).
+                resized = self.screen.active and self.screen_size != self.want_size
                 self.size = self.want_size
-                try:
-                    node = self.screen.start()
-                except (GLib.Error, RuntimeError) as e:
-                    log(f'écran virtuel impossible : {getattr(e, "message", e)}')
-                    self.set_state('Écran virtuel impossible (voir le journal)')
-                    time.sleep(5)
-                    continue
-                log(f'écran virtuel {self.size[0]}x{self.size[1]} créé (flux PipeWire {node})')
+                self.resizing_inplace = reused = False
+                if self.screen.active and not self.force_recreate and (not resized or self.cfg.get('resize_inplace', True)):
+                    node, reused = self.screen.node, True
+                    if resized:
+                        self.resizing_inplace = True
+                        log(f"écran de l'iPad redimensionné sur place : {self.size[0]}x{self.size[1]}")
+                else:
+                    self.force_recreate = False
+                    try:
+                        node = self.screen.start()
+                    except (GLib.Error, RuntimeError) as e:
+                        log(f'écran virtuel impossible : {getattr(e, "message", e)}')
+                        self.set_state('Écran virtuel impossible (voir le journal)')
+                        time.sleep(5)
+                        continue
+                    log(f'écran virtuel {self.size[0]}x{self.size[1]} créé (flux PipeWire {node})')
+                self.screen_size = self.size
                 self.set_state(f'Connecté : {session.name} · {self.size[0]}x{self.size[1]}')
                 threading.Thread(target=self.apply_layout, daemon=True).start()
                 try:
@@ -1402,8 +1430,13 @@ class App:
                 except GLib.Error as e:
                     log(f'capture impossible : {e.message}')
                     lasted = 0
-                if self.want_size != self.size or session.closed:
-                    continue   # nouvelle taille : l'écran est recréé ; session finie : on sort
+                if reused and lasted < 2 and not session.closed and self.want_size == self.size:
+                    if self.resizing_inplace:
+                        self.inplace_failed('la capture refuse la nouvelle taille')
+                    else:
+                        self.force_recreate = True   # flux de l'écran fermé par GNOME : on recrée l'écran
+                if self.want_size != self.size or session.closed or self.force_recreate:
+                    continue   # nouvelle taille ou écran à recréer : on boucle ; session finie : on sort
                 if lasted < 3:
                     time.sleep(3)
             self.screen.stop()
