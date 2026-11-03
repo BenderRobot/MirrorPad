@@ -875,9 +875,10 @@ class App:
         elif k == 'ACTIVE':
             if self.standby:
                 log("iPad revenu sur ce PC")
-                self.standby = False
-                if s:
-                    s.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
+            self.standby = False
+            if s:
+                s.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
+            self.streamer.restart()   # toujours un nouveau flux (« V NEW ») : l'iPad ignore celui envoyé pendant la veille
         elif k == 'SLEEP':
             log('iPad verrouillé')
             self.sleeping = True
@@ -965,13 +966,13 @@ class App:
             fails = 0
             self.session, self.sleeping = session, False
             session.last_rx = time.time()
+            self.standby = False   # avant la lecture : un « STANDBY » de l'iPad peut arriver tout de suite
             threading.Thread(target=self.read_loop, args=(session,), daemon=True).start()
             threading.Thread(target=self.keepalive, args=(session,), daemon=True).start()
             session.send('N ' + socket.gethostname())
             session.send('SC ' + ' '.join(urllib.parse.quote(f'{l}|{c}') for l, c in self.cfg.get('shortcuts', DEFAULT_SHORTCUTS)))
             session.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
             time.sleep(0.4)   # l'iPad annonce la taille de sa zone d'image (« RES w h ») dès la connexion
-            self.standby = False
             while not session.closed and self.wanted:
                 if self.standby:
                     if self.screen.active:

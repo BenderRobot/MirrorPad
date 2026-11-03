@@ -88,11 +88,15 @@ namespace bSideDesk
             // plusieurs PC sur le même iPad : en veille, on garde la liaison mais on n'envoie plus d'image
             input.Standby = on =>
             {
-                if (on == standby) return;
+                if (on != standby) Log.Write(on ? "iPad passé sur un autre PC : bSideDesk en veille" : "iPad revenu sur ce PC");
                 standby = on;
-                Log.Write(on ? "iPad passé sur un autre PC : bSideDesk en veille" : "iPad revenu sur ce PC");
                 if (on) { restartRequested = true; streamer.Stop(); sound.Stop(); camera.Stop(); mic.Stop(); dashboard.Stop(); }
-                else lastFg = "";   // la Touch Bar de ce PC est renvoyée
+                else
+                {
+                    // « ACTIVE » : toujours un nouveau flux (« V NEW »), l'iPad ignore celui envoyé pendant la veille
+                    lastFg = "";   // la Touch Bar de ce PC est renvoyée
+                    restartRequested = true; streamer.Stop();
+                }
             };
             input.Sleep = () => { Log.Write("iPad verrouillé"); sleepRequested = true; lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
@@ -320,12 +324,12 @@ namespace bSideDesk
                 streamer.ResetAdapt();
                 streamer.Stats = (pct, mb) => s.Send("Q " + pct + " " + mb);   // saturation et débit, pour le panneau d'infos de l'iPad
                 if (cfg.AutoKeyboard) { focus.ScreenBounds = () => input.Bounds; focus.Send = line => s.Send(line); input.Tapped = focus.Tapped; focus.Start(); }
+                standby = false;   // avant la lecture : un « STANDBY » de l'iPad peut arriver tout de suite
                 new Thread(s.ReadLoop) { IsBackground = true, Name = "lecture" }.Start();
                 s.Send("N " + Environment.MachineName);
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
 
                 // diffusion : on relance ffmpeg tant que la session vit (rotation, qualité, encodeur en échec…)
-                standby = false;
                 while (wanted && !s.IsClosed)
                 {
                     if (standby)
