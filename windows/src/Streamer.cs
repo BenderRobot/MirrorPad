@@ -20,6 +20,9 @@ namespace bSideDesk
         public DateTime StartedAt;
 
         public Streamer(Config c) { cfg = c; }
+        public Func<int> OutputIndex;            // sortie ddagrab de l'écran virtuel (calculée par l'app)
+        public int CapturedOutput = -1;          // sortie capturée par le ffmpeg en cours
+        int Out() { try { if (OutputIndex != null) { int i = OutputIndex(); if (i >= 0) return i; } } catch { } return cfg.Output; }
 
         // ---- Débit adaptatif : si le réseau n'arrive plus à suivre, on baisse la qualité plutôt que de prendre du retard ----
         public int LiveMbps;                 // débit réellement utilisé (≤ réglage) ; 0 = réglage
@@ -92,7 +95,7 @@ namespace bSideDesk
             string found = "x264";
             foreach (var e in new[] { "qsv", "qsv-sys", "nvenc" })
             {
-                var psi = new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel quiet -f lavfi -i ddagrab=output_idx=" + cfg.Output +
+                var psi = new ProcessStartInfo(ffmpeg, "-hide_banner -loglevel quiet -f lavfi -i ddagrab=output_idx=" + Out() +
                     ":framerate=30 -frames:v 10 " + EncoderArgs(e) + " -f null -") { UseShellExecute = false, CreateNoWindow = true };
                 try
                 {
@@ -112,7 +115,8 @@ namespace bSideDesk
         // Lance ffmpeg et pompe la vidéo vers la session jusqu'à l'arrêt de ffmpeg ou de la session
         public void Run(string ffmpeg, Session s)
         {
-            var args = "-hide_banner -loglevel error -f lavfi -i ddagrab=output_idx=" + cfg.Output + ":framerate=" + cfg.Fps +
+            CapturedOutput = Out();
+            var args = "-hide_banner -loglevel error -f lavfi -i ddagrab=output_idx=" + CapturedOutput + ":framerate=" + cfg.Fps +
                        " " + EncoderArgs(ActiveEncoder) + " -f flv -flvflags no_duration_filesize -flush_packets 1 pipe:1";
             var psi = new ProcessStartInfo(ffmpeg, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
             var rep = Path.Combine(Config.Dir, "ffmpeg.log").Replace('\\', '/').Replace(":", "\\:");

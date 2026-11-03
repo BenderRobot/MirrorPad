@@ -256,16 +256,30 @@ namespace bSideDesk
 
         public Rectangle Bounds { get { lock (this) return bounds; } }
 
-        // Écran qui reçoit le tactile : celui choisi, sinon l'écran 2048×1536 / 1536×2048, sinon le premier écran secondaire
+        // Écran de l'iPad : celui choisi dans les réglages, sinon l'écran virtuel de bSideDesk reconnu à son pilote.
+        // Jamais « le premier écran secondaire » : avec un écran externe branché, ce serait lui qu'on pivoterait,
+        // déplacerait ou débrancherait. Écran virtuel absent du bureau : TargetDevice = "" (aucune action sur les écrans).
+        public volatile bool VirtualMissing;   // pilote présent mais écran virtuel débranché du bureau
+        string lastTarget;
         public void RefreshBounds()
         {
             var screens = Screen.AllScreens;
-            var s = screens.FirstOrDefault(x => !string.IsNullOrEmpty(cfg.TouchScreen) && x.DeviceName == cfg.TouchScreen)
-                 ?? screens.FirstOrDefault(x => (x.Bounds.Width == 2048 && x.Bounds.Height == 1536) || (x.Bounds.Width == 1536 && x.Bounds.Height == 2048))
-                 ?? screens.FirstOrDefault(x => !x.Primary)
-                 ?? Screen.PrimaryScreen;
+            Screen s = null;
+            if (!string.IsNullOrEmpty(cfg.TouchScreen)) s = screens.FirstOrDefault(x => x.DeviceName == cfg.TouchScreen);
+            bool attached; var v = Displays.Virtual(out attached);
+            if (s == null && v != null) s = screens.FirstOrDefault(x => string.Equals(x.DeviceName, v, StringComparison.OrdinalIgnoreCase));
+            VirtualMissing = s == null && v != null;
+            if (s == null && v == null)   // pilote non reconnu : écran secondaire aux dimensions de l'iPad
+                s = screens.FirstOrDefault(x => !x.Primary && (x.Bounds.Width == 2048 || x.Bounds.Width == 1536) && (x.Bounds.Height >= 1400));
+            if (s == null) s = Screen.PrimaryScreen;
             lock (this) bounds = s.Bounds;
             TargetDevice = s.Primary ? "" : s.DeviceName;
+            if (TargetDevice != lastTarget)
+            {
+                lastTarget = TargetDevice;
+                Log.Write("écran de l'iPad : " + (TargetDevice == "" ? (VirtualMissing ? "écran virtuel débranché" : "aucun écran virtuel trouvé") : TargetDevice + " " + s.Bounds.Width + "x" + s.Bounds.Height + " en " + s.Bounds.X + "," + s.Bounds.Y)
+                          + " · écrans : " + Displays.Describe());
+            }
         }
 
         public void ReleaseLeft()
@@ -431,6 +445,7 @@ namespace bSideDesk
             RefreshBounds();
             var b = Bounds; var dev = TargetDevice;
             if (string.IsNullOrEmpty(dev) || (b.Width == w && b.Height == h)) return;
+            if (!Displays.IsVirtual(dev)) { Log.Write("changement de définition refusé : " + dev + " n'est pas l'écran virtuel"); return; }
             // on coupe l'image AVANT de basculer : l'iPad ne voit pas Windows réorganiser le bureau,
             // puis la capture reprend une fois le fond d'écran et les icônes en place
             if (HoldStream != null) HoldStream(1200);

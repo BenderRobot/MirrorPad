@@ -42,6 +42,7 @@ namespace bSideDesk
         volatile bool wanted;
         string lastRoute = "";
         volatile bool restartRequested;   // ffmpeg arrêté exprès (rotation, qualité) : pas un échec
+        DateTime lastWake = DateTime.MinValue;
         DateTime holdUntil = DateTime.MinValue;   // pas de capture avant cette heure (bureau en cours de réorganisation)
         volatile Session session;
         string state = "";
@@ -72,11 +73,14 @@ namespace bSideDesk
             foreach (var old in Directory.GetFiles(appDir, "*.old")) { try { File.Delete(old); } catch { } }
             Log.Write("bSideDesk " + localVersion + " démarré" + (elevated ? " (administrateur)" : ""));
 
+            try { Log.Write("écrans : " + Displays.Describe()); } catch { }
             streamer = new Streamer(cfg);
             input = new InputHandler(cfg);
             input.RefreshBounds();
             input.RestartStream = () => { restartRequested = true; streamer.Stop(); };
             input.Placed = PlaceVirtual;
+            // numéro de sortie à capturer : recalculé à chaque lancement de ffmpeg (il change quand on branche un écran)
+            streamer.OutputIndex = () => { var d = input.TargetDevice; int i = string.IsNullOrEmpty(d) ? -1 : Displays.CaptureIndex(d); return i >= 0 ? i : cfg.Output; };
             input.AfterDriverRestart = () => { WakeVirtual(); input.RefreshBounds(); PlaceVirtual(); };
             input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
             input.Sleep = () => { Log.Write("iPad verrouillé"); sleepRequested = true; lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
@@ -215,6 +219,18 @@ namespace bSideDesk
             ticks++;
             if (cfg.AutoUpdate && (ticks == 10 || ticks % 120 == 0)) ThreadPool.QueueUserWorkItem(_ => CheckUpdate(false));
             try { input.RefreshBounds(); } catch { }
+            // écran branché / débranché pendant la diffusion : la sortie capturée a peut-être changé de numéro
+            if (ticks % 2 == 0 && streamer.Running && session != null)
+                try
+                {
+                    int now = streamer.OutputIndex();
+                    if (now != streamer.CapturedOutput)
+                    {
+                        Log.Write("écrans modifiés : capture de la sortie " + now + " au lieu de " + streamer.CapturedOutput);
+                        restartRequested = true; streamer.Stop();
+                    }
+                }
+                catch { }
             var s = session;
             if (s != null && !s.IsClosed) { lastAlive = DateTime.Now; proxLocked = false; }
             // verrouillage par proximité : l'iPad a disparu du réseau (emporté) sans s'être mis en veille
@@ -301,6 +317,14 @@ namespace bSideDesk
                     while (DateTime.Now < holdUntil && !s.IsClosed) Thread.Sleep(40);   // rotation : on laisse Windows finir
                     if (s.IsClosed) break;
                     restartRequested = false;
+                    input.RefreshBounds();
+                    if (input.VirtualMissing)
+                    {
+                        // écran virtuel pas (encore) sur le bureau : on ne capture surtout pas un autre écran à sa place
+                        if ((DateTime.Now - lastWake).TotalSeconds > 10) { lastWake = DateTime.Now; WakeVirtual(); PlaceVirtual(); }
+                        Thread.Sleep(500);
+                        continue;
+                    }
                     streamer.ActiveEncoder = streamer.PickEncoder(ffmpeg, msg => Post(() => Balloon(msg, ToolTipIcon.Info)));
                     s.Send("C " + cfg.Fps + " " + cfg.Mbps + " " + Uri.EscapeDataString(Streamer.EncoderNames[streamer.ActiveEncoder]));
                     var t0 = DateTime.Now;
@@ -419,7 +443,7 @@ namespace bSideDesk
                 input.RefreshBounds();
                 var dev = input.TargetDevice;
                 int x, y, w, h;
-                if (string.IsNullOrEmpty(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
+                if (string.IsNullOrEmpty(dev) || !Displays.IsVirtual(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
                 var main = Screen.PrimaryScreen.Bounds;
                 int nx, ny;
                 switch (side)
@@ -447,7 +471,7 @@ namespace bSideDesk
                 input.RefreshBounds();
                 var dev = input.TargetDevice;
                 int x, y, w, h;
-                if (string.IsNullOrEmpty(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
+                if (string.IsNullOrEmpty(dev) || !Displays.IsVirtual(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
                 int r = Native.DetachDisplay(dev);
                 if (r != 0) { Log.Write("impossible de retirer l'écran virtuel (code " + r + ")"); return; }
                 cfg.VirtualDevice = dev; cfg.VirtualX = x; cfg.VirtualY = y; cfg.VirtualW = w; cfg.VirtualH = h; cfg.VirtualDetached = true;
@@ -461,16 +485,21 @@ namespace bSideDesk
         {
             lock (displayLock)
             {
-                var dev = cfg.VirtualDevice;
+                // les numéros \\.\DISPLAYn changent quand on branche un écran externe : on retrouve l'écran virtuel par son pilote
+                bool attachedNow; var found = Displays.Virtual(out attachedNow);
+                var dev = found ?? cfg.VirtualDevice;
                 if (string.IsNullOrEmpty(dev)) return;
+                if (found != null && found != cfg.VirtualDevice) { Log.Write("écran virtuel : " + cfg.VirtualDevice + " est devenu " + found); cfg.VirtualDevice = found; cfg.Save(); }
                 int x, y, w, h;
-                if (Native.GetDisplay(dev, out x, out y, out w, out h)) { if (cfg.VirtualDetached) { cfg.VirtualDetached = false; cfg.Save(); } return; }
+                if (Native.GetDisplay(dev, out x, out y, out w, out h)) { if (cfg.VirtualDetached) { cfg.VirtualDetached = false; cfg.Save(); } input.RefreshBounds(); return; }
                 int r = Native.AttachDisplay(dev, cfg.VirtualX, cfg.VirtualY, cfg.VirtualW, cfg.VirtualH);
                 if (r != 0 || !Native.GetDisplay(dev, out x, out y, out w, out h))
                 {
                     // repli : « Étendre » sur tous les écrans, puis on remet la définition mémorisée
                     int e = Native.ExtendAll();
                     Thread.Sleep(1500);
+                    var again = Displays.Virtual(out attachedNow);
+                    if (again != null) dev = again;
                     if (!Native.GetDisplay(dev, out x, out y, out w, out h))
                     {
                         Log.Write("impossible de rebrancher l'écran virtuel (codes " + r + " / " + e + ") : Windows + P > Étendre");
@@ -478,7 +507,7 @@ namespace bSideDesk
                     }
                     if (cfg.VirtualW > 0 && (w != cfg.VirtualW || h != cfg.VirtualH)) Native.SetResolution(dev, cfg.VirtualW, cfg.VirtualH);
                 }
-                cfg.VirtualDetached = false; cfg.Save();
+                cfg.VirtualDevice = dev; cfg.VirtualDetached = false; cfg.Save();
                 Log.Write("écran virtuel rebranché (" + cfg.VirtualW + "x" + cfg.VirtualH + ")");
                 Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
                 input.RefreshBounds();
