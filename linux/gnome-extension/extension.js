@@ -72,7 +72,9 @@ class BSideDeskExtension {
         return { background, container };
     }
 
-    // step 1 : demander à GNOME de refaire la mise en page ; 2 : si le décalage reste, le compenser à l'affichage
+    // step 1 : demander à GNOME de refaire la mise en page ; 2 : compenser à l'affichage ce qui reste décalé.
+    // La compensation est calculée sur la position RÉELLEMENT affichée (correction déjà appliquée comprise) :
+    // elle se rattrape d'elle-même si GNOME bouge encore le contenu, et ne décale jamais dans l'autre sens.
     _refit(step) {
         for (const actor of global.get_window_actors()) {
             const win = actor.meta_window;
@@ -82,31 +84,36 @@ class BSideDeskExtension {
                 const { background, container } = this._parts(actor);
                 if (!container)
                     continue;
-                if (!container._bsdHook) {   // GNOME refait la mise en page plus tard : notre correction suit
+                if (!container._bsdHook)   // GNOME refait la mise en page plus tard : notre correction suit
                     container._bsdHook = container.connect('notify::allocation', () => this._soon());
-                }
                 const [cx, cy] = container.get_position();
                 const [cw, ch] = container.get_size();
                 const [tx, ty] = [container.translation_x, container.translation_y];
-                let want = [0, 0];
-                if (win.is_fullscreen() && background) {
-                    const [bw, bh] = background.get_size();
-                    // surface aussi grande que l'écran : aucun centrage n'a lieu d'être
-                    if (Math.abs(bw - cw) < 1 && Math.abs(bh - ch) < 1 && (Math.round(cx) !== 0 || Math.round(cy) !== 0)) {
-                        if (step === 1) {
-                            actor.queue_relayout();
-                            container.queue_relayout();
-                            log(`bSideDesk: « ${win.get_title()} » contenu décalé de ${Math.round(cx)},${Math.round(cy)} : nouvelle mise en page demandée`);
-                            continue;
-                        }
-                        want = [-cx, -cy];
+                const covers = win.is_fullscreen() && background &&
+                    Math.abs(background.get_width() - cw) < 1 && Math.abs(background.get_height() - ch) < 1;
+                if (!covers) {
+                    if (tx || ty) {
+                        container.set_translation(0, 0, 0);
+                        log(`bSideDesk: « ${win.get_title()} » correction retirée`);
                     }
+                    continue;
                 }
-                if (Math.abs(want[0] - tx) >= 1 || Math.abs(want[1] - ty) >= 1) {
-                    container.set_translation(want[0], want[1], 0);
-                    log(`bSideDesk: « ${win.get_title()} » contenu ${Math.round(cw)}x${Math.round(ch)}+${Math.round(cx)}+${Math.round(cy)} ` +
-                        (want[0] || want[1] ? `recalé en +0+0` : 'correction retirée'));
+                // position affichée du contenu par rapport au fond noir, en unités du contenu (×2 compris)
+                const [bx, by] = background.get_transformed_position();
+                const [px, py] = container.get_transformed_position();
+                const [pw] = container.get_transformed_size();
+                const k = pw > 0 ? cw / pw : 1;
+                const dx = (px - bx) * k, dy = (py - by) * k;
+                if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5)
+                    continue;
+                if (step === 1 && !tx && !ty) {
+                    actor.queue_relayout();
+                    log(`bSideDesk: « ${win.get_title()} » contenu ${Math.round(cw)}x${Math.round(ch)} décalé de ${Math.round(dx)},${Math.round(dy)} : nouvelle mise en page demandée`);
+                    continue;
                 }
+                container.set_translation(tx - dx, ty - dy, 0);
+                log(`bSideDesk: « ${win.get_title()} » contenu ${Math.round(cw)}x${Math.round(ch)} mise en page +${Math.round(cx)}+${Math.round(cy)}, ` +
+                    `affiché décalé de ${Math.round(dx)},${Math.round(dy)} -> correction ${Math.round(tx - dx)},${Math.round(ty - dy)}`);
             } catch (e) {
                 logError(e, 'bSideDesk');
             }
