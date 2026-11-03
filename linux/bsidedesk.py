@@ -780,7 +780,7 @@ class App:
         if s:
             s.close()
         self.screen.stop()
-        os.execv('/usr/bin/bsidedesk', ['/usr/bin/bsidedesk'])
+        os.execv(sys.executable, [sys.executable, '/usr/lib/bsidedesk/bsidedesk.py'])   # même processus : le lanceur continue de veiller
 
     # ---------- réglages ----------
     def show_settings(self):
@@ -1004,7 +1004,16 @@ class App:
             self.set_state("En attente de l'iPad")
             time.sleep(1 if not getattr(self, 'sleeping', False) else 3)
 
+    def watch_version(self):
+        """Paquet mis à jour par le service système (minuterie bsidedesk-update) : on relance la nouvelle version."""
+        if version() != self.started_version:
+            log(f'nouvelle version installée ({version()}) : redémarrage')
+            self.quit_and_restart()
+        return True
+
     def run(self):
+        self.started_version = version()
+        GLib.timeout_add_seconds(60, self.watch_version)
         self.build_tray()
         threading.Thread(target=self.connection_loop, daemon=True).start()
         signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(self.quit))

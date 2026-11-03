@@ -11,12 +11,42 @@ mkdir -p "$R/DEBIAN" "$R/usr/lib/bsidedesk" "$R/usr/bin" "$R/usr/share/applicati
 install -m 755 bsidedesk.py "$R/usr/lib/bsidedesk/bsidedesk.py"
 install -m 755 bsidedesk-update "$R/usr/lib/bsidedesk/bsidedesk-update"
 echo "$V" > "$R/usr/lib/bsidedesk/version.txt"
-printf '#!/bin/sh\nexec /usr/bin/python3 /usr/lib/bsidedesk/bsidedesk.py "$@"\n' > "$R/usr/bin/bsidedesk"
+# lanceur : sans argument, l'app est relancée si elle plante (code de sortie non nul) ; « Quitter » l'arrête vraiment
+cat > "$R/usr/bin/bsidedesk" <<'LAUNCH'
+#!/bin/sh
+if [ $# -gt 0 ]; then exec /usr/bin/python3 /usr/lib/bsidedesk/bsidedesk.py "$@"; fi
+while :; do
+  /usr/bin/python3 /usr/lib/bsidedesk/bsidedesk.py && exit 0
+  sleep 5
+done
+LAUNCH
 chmod 755 "$R/usr/bin/bsidedesk"
 install -m 644 bsidedesk.desktop "$R/usr/share/applications/bsidedesk.desktop"
 install -m 644 bsidedesk.desktop "$R/etc/xdg/autostart/bsidedesk.desktop"
 install -m 644 ../windows/bSideDesk.png "$R/usr/share/pixmaps/bsidedesk.png"
 install -m 644 fr.bsidedesk.update.policy "$R/usr/share/polkit-1/actions/fr.bsidedesk.update.policy"
+# mises à jour par le système (root), même sans session ouverte : au démarrage puis toutes les 30 min
+mkdir -p "$R/lib/systemd/system"
+install -m 644 bsidedesk-update.service "$R/lib/systemd/system/bsidedesk-update.service"
+install -m 644 bsidedesk-update.timer "$R/lib/systemd/system/bsidedesk-update.timer"
+cat > "$R/DEBIAN/postinst" <<'POST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now bsidedesk-update.timer >/dev/null 2>&1 || true
+fi
+exit 0
+POST
+cat > "$R/DEBIAN/prerm" <<'PRERM'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+  systemctl disable --now bsidedesk-update.timer >/dev/null 2>&1 || true
+fi
+exit 0
+PRERM
+chmod 755 "$R/DEBIAN/postinst" "$R/DEBIAN/prerm"
 install -m 644 ../README.md "$R/usr/share/doc/bsidedesk/README.md"
 cat > "$R/DEBIAN/control" <<CTRL
 Package: bsidedesk

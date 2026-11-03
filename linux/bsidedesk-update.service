@@ -1,0 +1,10 @@
+[Unit]
+Description=bSideDesk : installation de la dernière version publiée sur GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bsidedesk/bsidedesk-update
+# 2 = déjà à jour, 3 = pas de paquet Linux dans la release : ce ne sont pas des échecs
+SuccessExitStatus=2 3
