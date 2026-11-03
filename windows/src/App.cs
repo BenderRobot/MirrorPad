@@ -843,8 +843,12 @@ namespace bSideDesk
         void Restart()
         {
             Shutdown();
-            if (cfg.AdminMode) Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn bSideDesk") { CreateNoWindow = true, UseShellExecute = false });
-            else Process.Start(Path.Combine(appDir, "bSideDesk.exe"));
+            var exe = Path.Combine(appDir, "bSideDesk.exe");
+            // Déjà en administrateur (lancé par la tâche planifiée) : on relance l'exe directement, il hérite des droits.
+            // « schtasks /run » ne marcherait pas : la tâche est encore « en cours » (c'est nous) et refuse une 2e instance.
+            if (elevated || !cfg.AdminMode) Process.Start(new ProcessStartInfo(exe, "--restarted") { UseShellExecute = false, WorkingDirectory = appDir });
+            else Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/run /tn bSideDesk") { CreateNoWindow = true, UseShellExecute = false });
+            Log.Write("redémarrage de bSideDesk" + (elevated ? " (administrateur)" : ""));
             ExitThread();
         }
 

@@ -23,9 +23,13 @@ namespace bSideDesk
             // « Envoyer vers > iPad (bSideDesk) » : on dépose la demande pour l'instance déjà lancée, et on s'arrête
             if (args.Length > 0 && args[0] == "--send") { try { Outbox.Queue(args.Skip(1)); } catch { } return; }
             mutex = new Mutex(false, @"Local\bSideDeskSender");
-            if (!mutex.WaitOne(0))
+            // relance après mise à jour : l'ancienne instance a quelques secondes pour se fermer
+            bool restarted = args.Length > 0 && args[0] == "--restarted";
+            bool got;
+            try { got = mutex.WaitOne(restarted ? 15000 : 0); } catch (AbandonedMutexException) { got = true; }
+            if (!got)
             {
-                MessageBox.Show("bSideDesk est déjà lancé (icône près de l'horloge).", "bSideDesk");
+                if (!restarted) MessageBox.Show("bSideDesk est déjà lancé (icône près de l'horloge).", "bSideDesk");
                 return;
             }
             // l'ancienne app (MirrorPad) ne doit plus tourner en même temps
