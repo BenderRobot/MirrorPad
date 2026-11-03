@@ -187,10 +187,29 @@ static NSString *MPDeviceId(void){
  return i;
 }
 
+@class MPSecureServer;
+// Une liaison chiffrée avec un PC. Plusieurs PC peuvent être connectés en même temps : un seul est « actif »
+// (son écran est affiché, les gestes lui sont envoyés), les autres sont « en veille » (pas d'image, liaison gardée).
+@interface MPLink : NSObject
+@property(nonatomic,weak) MPSecureServer *hub;
+@property(atomic,readonly,copy) NSString *pcId,*pcName,*peer;
+@property(atomic,readonly) BOOL auth;
+- (instancetype)initWithFd:(int)fd peer:(NSString*)peer;
+- (void)run;
+- (BOOL)isActive;
+- (void)send:(NSString*)line;
+- (void)enqueue:(uint8_t)type data:(NSData*)d;
+- (NSUInteger)pending;
+- (void)disconnect;
+- (void)endVideo;
+@end
+
 @interface MPSecureServer : NSObject
-@property(nonatomic,copy) void (^onLine)(NSString *line);                      // fil principal, après authentification
-@property(nonatomic,copy) void (^onAuthenticated)(NSString *pcName);           // fil principal
-@property(nonatomic,copy) void (^onClosed)(void);                              // fil principal
+@property(nonatomic,copy) void (^onLine)(NSString *line);                      // fil principal, PC actif seulement
+@property(nonatomic,copy) void (^onAuthenticated)(NSString *pcName);           // fil principal : un PC devient le PC actif
+@property(nonatomic,copy) void (^onSwitching)(NSString *pcName);               // fil principal : on passe d'un PC à un autre
+@property(nonatomic,copy) void (^onClosed)(void);                              // fil principal : plus aucun PC
+@property(nonatomic,copy) void (^onPCsChanged)(void);                          // fil principal : liste des PC connectés modifiée
 @property(nonatomic,copy) void (^onPairing)(NSString *pcName,NSString *code);  // fil principal : afficher le code
 @property(nonatomic,copy) void (^onNotice)(NSString *title,NSString *text,BOOL ok); // fil principal : résultat / alerte
 @property(nonatomic,copy) void (^onVideoStart)(int fd);                        // fil réseau : nouveau flux à décoder
@@ -198,14 +217,23 @@ static NSString *MPDeviceId(void){
 @property(nonatomic,readonly) BOOL connected;
 @property(atomic,readonly,copy) NSString *peer;
 @property(atomic) BOOL paused;   // app en arrière-plan : on refuse les connexions
+@property(atomic,readonly) MPLink *active;
 - (void)start;
 - (void)send:(NSString*)line;
-- (void)disconnect;               // envoie la file d'attente puis ferme la session
+- (void)sendAll:(NSString*)line;   // à tous les PC connectés (veille de l'iPad)
+- (void)disconnect;               // envoie la file d'attente puis ferme toutes les liaisons
 - (void)sendBinary:(uint8_t)type data:(NSData*)d;   // 3 webcam, 4 image copiée, 5 fichier, 6 micro, 8 fichier en morceaux
 - (NSUInteger)pending;                               // trames en attente d'envoi (pour ne pas saturer la mémoire)
+- (NSArray<MPLink*>*)links;       // PC connectés et authentifiés
+- (void)activate:(MPLink*)link;   // bascule vers ce PC
+- (void)activateNext;
+- (void)linkAuthenticated:(MPLink*)link;
+- (void)linkClosed:(MPLink*)link authenticated:(BOOL)wasAuth;
 @property(nonatomic,copy) void (^onSound)(NSData *pcm);   // 7 : son du PC (fil réseau)
 @end
-@implementation MPSecureServer {
+
+@implementation MPLink {
+ int _fd;
  volatile BOOL _closing;
  SSLContextRef _ctx;
  int _wake[2];
@@ -213,37 +241,18 @@ static NSString *MPDeviceId(void){
  volatile BOOL _auth;
  int _videoFd;
 }
-- (instancetype)init {
- if((self=[super init])){_queue=[NSMutableArray array];pipe(_wake);fcntl(_wake[0],F_SETFL,O_NONBLOCK);fcntl(_wake[1],F_SETFL,O_NONBLOCK);_videoFd=-1;}
+- (instancetype)initWithFd:(int)fd peer:(NSString*)peer {
+ if((self=[super init])){_fd=fd;_peer=[peer copy];_queue=[NSMutableArray array];pipe(_wake);fcntl(_wake[0],F_SETFL,O_NONBLOCK);fcntl(_wake[1],F_SETFL,O_NONBLOCK);_videoFd=-1;}
  return self;
 }
-- (BOOL)connected {return _auth;}
-- (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
+- (void)dealloc {close(_wake[0]);close(_wake[1]);}
+- (BOOL)auth {return _auth;}
+- (BOOL)isActive {return self.hub.active==self;}
 - (void)ui:(dispatch_block_t)b {dispatch_async(dispatch_get_main_queue(),b);}
-- (void)serve {
- int srv=-1;
- for(;;){
-  if(srv<0){srv=MPListen(MP_PORT);if(srv<0){sleep(1);continue;}}
-  struct sockaddr_in from;socklen_t len=sizeof from;
-  int c=accept(srv,(struct sockaddr*)&from,&len);
-  if(c<0){if(errno!=EINTR){close(srv);srv=-1;sleep(1);}continue;}
-  if(self.paused){close(c);continue;}
-  char ip[INET_ADDRSTRLEN]="";inet_ntop(AF_INET,&from.sin_addr,ip,sizeof ip);
-  _peer=@(ip);
-  [self runSession:c];   // une session à la fois ; la suivante attend la fin de celle-ci
- }
-}
 - (void)send:(NSString*)line {
  if(!_auth)return;
  if([line hasSuffix:@"\n"])line=[line substringToIndex:line.length-1];
  [self enqueue:1 data:[line dataUsingEncoding:NSUTF8StringEncoding]];
-}
-- (void)sendBinary:(uint8_t)type data:(NSData*)d {
- if(!_auth||d.length>=(1u<<24))return;
- if(type==3||type==6){   // flux temps réel : si la file déborde (Wi-Fi lent), on jette plutôt que d'accumuler du retard
-  @synchronized(_queue){if(_queue.count>60)return;}
- }
- [self enqueue:type data:d];
 }
 - (NSUInteger)pending {@synchronized(_queue){return _queue.count;}}
 - (void)disconnect {
@@ -274,7 +283,8 @@ static NSString *MPDeviceId(void){
  return [self write:f];
 }
 - (void)endVideo {if(_videoFd>=0){close(_videoFd);_videoFd=-1;}}
-- (void)runSession:(int)fd {
+- (void)run {
+ int fd=_fd;
  int one=1;
  setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof one);
  setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof one);
@@ -342,18 +352,18 @@ static NSString *MPDeviceId(void){
    if(in.length<4+len)break;
    uint8_t type=h[0];
    if(type==2){
-    if(_auth&&_videoFd>=0){
+    if(_auth&&_videoFd>=0&&self.isActive){
      size_t w=0;while(w<len){ssize_t r=write(_videoFd,h+4+w,len-w);if(r<=0){if(r<0&&errno==EINTR)continue;[self endVideo];break;}w+=(size_t)r;}
     }
-   } else if(type==4&&_auth){
+   } else if(type==4&&_auth&&self.isActive){
     NSData *img=[NSData dataWithBytes:h+4 length:len];
-    [self ui:^{if(self.onBinary)self.onBinary(4,img);}];
-   } else if(type==8&&_auth){
+    [self ui:^{if(self.hub.onBinary)self.hub.onBinary(4,img);}];
+   } else if(type==8&&_auth&&self.isActive){
     NSData *chunk=[NSData dataWithBytes:h+4 length:len];
-    [self ui:^{if(self.onBinary)self.onBinary(8,chunk);}];
-   } else if(type==7&&_auth){
+    [self ui:^{if(self.hub.onBinary)self.hub.onBinary(8,chunk);}];
+   } else if(type==7&&_auth&&self.isActive){
     // son du PC : remis directement au haut-parleur (sans passer par le fil principal)
-    if(self.onSound)self.onSound([NSData dataWithBytes:h+4 length:len]);
+    if(self.hub.onSound)self.hub.onSound([NSData dataWithBytes:h+4 length:len]);
    } else if(type==1){
     NSString *line=[[NSString alloc] initWithBytes:h+4 length:len encoding:NSUTF8StringEncoding]?:@"";
     NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
@@ -366,7 +376,7 @@ static NSString *MPDeviceId(void){
        if(![known[@"fp"] isEqualToString:fp]){
         NSString *n=pcName;
         [self sendNow:@"ERR CERT"];
-        [self ui:^{if(self.onNotice)self.onNotice(@"Connexion refusée",[NSString stringWithFormat:@"Le certificat de « %@ » a changé. Si ce PC a été réinstallé, oubliez-le dans Réglages puis appairez-le à nouveau.",n],NO);}];
+        [self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Connexion refusée",[NSString stringWithFormat:@"Le certificat de « %@ » a changé. Si ce PC a été réinstallé, oubliez-le dans Réglages puis appairez-le à nouveau.",n],NO);}];
         goto done;
        }
        [self sendNow:[NSString stringWithFormat:@"AUTH %@ %@",MPDeviceId(),known[@"token"]]];
@@ -377,23 +387,26 @@ static NSString *MPDeviceId(void){
        uint32_t v=((uint32_t)d[0]<<24|(uint32_t)d[1]<<16|(uint32_t)d[2]<<8|d[3])%1000000;
        NSString *code=[NSString stringWithFormat:@"%06u",v],*n=pcName;
        pairing=YES;
-       [self ui:^{if(self.onPairing)self.onPairing(n,code);}];
+       [self ui:^{if(self.hub.onPairing)self.hub.onPairing(n,code);}];
        [self sendNow:[NSString stringWithFormat:@"PAIR %@ %@ %@",MPDeviceId(),MPEsc(UIDevice.currentDevice.name),MPHex(nonce,sizeof nonce)]];
       }
      } else if([k isEqualToString:@"OK"]||([k isEqualToString:@"PAIRED"]&&p.count>=2&&pairing)){
       if(pairing)MPSetPairedPC(pcId,@{@"name":pcName?:@"PC",@"fp":fp,@"token":p[1],@"date":[NSDate date]});
-      _auth=YES;
+      _auth=YES;_pcId=pcId;_pcName=pcName?:@"PC";
       NSString *n=pcName;BOOL wasPairing=pairing;
       [self ui:^{
-       if(wasPairing&&self.onNotice)self.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);
-       if(self.onAuthenticated)self.onAuthenticated(n);
+       if(wasPairing&&self.hub.onNotice)self.hub.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);
+       [self.hub linkAuthenticated:self];
       }];
      } else if([k isEqualToString:@"ERR"]){
       NSString *why=p.count>1?p[1]:@"",*n=pcName;
       if([why isEqualToString:@"AUTH"]&&pcId)MPSetPairedPC(pcId,nil);   // le PC nous a oubliés : nouvel appairage au prochain essai
-      [self ui:^{if(self.onNotice)self.onNotice(@"Connexion refusée",[why isEqualToString:@"REFUSED"]?[NSString stringWithFormat:@"L'appairage a été refusé sur « %@ ».",n]:@"Le PC ne reconnaît plus cet iPad : un nouvel appairage va être proposé.",NO);}];
+      [self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Connexion refusée",[why isEqualToString:@"REFUSED"]?[NSString stringWithFormat:@"L'appairage a été refusé sur « %@ ».",n]:@"Le PC ne reconnaît plus cet iPad : un nouvel appairage va être proposé.",NO);}];
       goto done;
      }
+    } else if(!self.isActive){
+     // PC en veille : il garde la liaison ouverte (une ligne « Q » par seconde), on répond pour qu'il sache que l'iPad est là
+     if([k isEqualToString:@"Q"])[self enqueue:1 data:[@"P 0" dataUsingEncoding:NSUTF8StringEncoding]];
     } else if([k isEqualToString:@"V"]&&p.count>=2){
      [self endVideo];
      if([p[1] isEqualToString:@"NEW"]){
@@ -401,11 +414,11 @@ static NSString *MPDeviceId(void){
       if(pipe(pf)==0){
        fcntl(pf[1],F_SETNOSIGPIPE,1);
        _videoFd=pf[1];
-       if(self.onVideoStart)self.onVideoStart(pf[0]);else close(pf[0]);
+       if(self.hub.onVideoStart)self.hub.onVideoStart(pf[0]);else close(pf[0]);
       }
      }
     } else {
-     [self ui:^{if(self.onLine)self.onLine(line);}];
+     [self ui:^{if(self.isActive&&self.hub.onLine)self.hub.onLine(line);}];
     }
    }
    [in replaceBytesInRange:NSMakeRange(0,4+len) withBytes:NULL length:0];
@@ -423,7 +436,92 @@ done:
  BOOL wasAuth=_auth;_auth=NO;
  SSLClose(_ctx);CFRelease(_ctx);_ctx=NULL;
  close(fd);
- [self ui:^{if(wasAuth&&self.onClosed)self.onClosed();}];
+ [self ui:^{[self.hub linkClosed:self authenticated:wasAuth];}];
+}
+@end
+
+@implementation MPSecureServer {
+ NSMutableArray<MPLink*> *_all;   // toutes les liaisons ouvertes (authentifiées ou non)
+ MPLink *_active;
+}
+- (instancetype)init {
+ if((self=[super init])){_all=[NSMutableArray array];}
+ return self;
+}
+- (MPLink*)active {@synchronized(self){return _active;}}
+- (BOOL)connected {MPLink *a=self.active;return a.auth;}
+- (NSString*)peer {return self.active.peer;}
+- (void)start {[NSThread detachNewThreadWithBlock:^{[self serve];}];}
+- (void)serve {
+ int srv=-1;
+ for(;;){
+  if(srv<0){srv=MPListen(MP_PORT);if(srv<0){sleep(1);continue;}}
+  struct sockaddr_in from;socklen_t len=sizeof from;
+  int c=accept(srv,(struct sockaddr*)&from,&len);
+  if(c<0){if(errno!=EINTR){close(srv);srv=-1;sleep(1);}continue;}
+  if(self.paused){close(c);continue;}
+  char ip[INET_ADDRSTRLEN]="";inet_ntop(AF_INET,&from.sin_addr,ip,sizeof ip);
+  BOOL full;@synchronized(self){full=_all.count>=4;}
+  if(full){close(c);continue;}
+  MPLink *l=[[MPLink alloc] initWithFd:c peer:@(ip)];
+  l.hub=self;
+  @synchronized(self){[_all addObject:l];}
+  [NSThread detachNewThreadWithBlock:^{[l run];}];   // chaque PC a sa propre liaison
+ }
+}
+- (NSArray<MPLink*>*)links {
+ @synchronized(self){
+  NSMutableArray *r=[NSMutableArray array];
+  for(MPLink *l in _all)if(l.auth)[r addObject:l];
+  return r;
+ }
+}
+- (void)send:(NSString*)line {[self.active send:line];}
+- (void)sendAll:(NSString*)line {for(MPLink *l in self.links)[l send:line];}
+- (void)sendBinary:(uint8_t)type data:(NSData*)d {
+ MPLink *a=self.active;
+ if(!a.auth||d.length>=(1u<<24))return;
+ if((type==3||type==6)&&a.pending>60)return;   // flux temps réel : si la file déborde (Wi-Fi lent), on jette plutôt que d'accumuler du retard
+ [a enqueue:type data:d];
+}
+- (NSUInteger)pending {return self.active.pending;}
+- (void)disconnect {NSArray *all;@synchronized(self){all=[_all copy];}for(MPLink *l in all)[l disconnect];}
+
+// fil principal
+- (void)linkAuthenticated:(MPLink*)link {
+ NSString *preferred=[NSUserDefaults.standardUserDefaults stringForKey:@"activePC"];
+ MPLink *cur=self.active;
+ if(!cur||!cur.auth){[self activate:link];}
+ else if(preferred&&[link.pcId isEqualToString:preferred]&&![cur.pcId isEqualToString:preferred]){[self activate:link];}   // le PC choisi en dernier reprend la main
+ else [link send:@"STANDBY"];
+ if(self.onPCsChanged)self.onPCsChanged();
+}
+- (void)activate:(MPLink*)link {
+ if(!link.auth)return;
+ MPLink *old=self.active;
+ if(old==link)return;
+ if(old){[old send:@"STANDBY"];[old endVideo];if(self.onSwitching)self.onSwitching(link.pcName);}
+ @synchronized(self){_active=link;}
+ if(link.pcId)[NSUserDefaults.standardUserDefaults setObject:link.pcId forKey:@"activePC"];
+ [link send:@"ACTIVE"];
+ if(self.onAuthenticated)self.onAuthenticated(link.pcName);
+ if(self.onPCsChanged)self.onPCsChanged();
+}
+- (void)activateNext {
+ NSArray<MPLink*> *ls=self.links;
+ if(ls.count<2)return;
+ NSUInteger i=[ls indexOfObject:self.active];
+ [self activate:ls[(i==NSNotFound?0:i+1)%ls.count]];
+}
+- (void)linkClosed:(MPLink*)link authenticated:(BOOL)wasAuth {
+ BOOL wasActive=NO;
+ @synchronized(self){[_all removeObject:link];if(_active==link){_active=nil;wasActive=YES;}}
+ if(wasActive){
+  MPLink *next=self.links.firstObject;
+  if(next){if(self.onSwitching)self.onSwitching(next.pcName);[self activate:next];}
+  else if(wasAuth&&self.onClosed)self.onClosed();
+ }
+ if(wasAuth&&self.onPCsChanged)self.onPCsChanged();
 }
 @end
 
@@ -1901,6 +1999,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  UIView *_curtain;
  BOOL _rotating,_streamAlive,_revealScheduled;
  unsigned _rotGen,_rotFromGen;
+ NSString *_tbTitle;NSArray *_tbItems;   // dernière Touch Bar envoyée par le PC actif
  NSString *_pendingOrientation, *_lastRes;   // dernière ligne « RES » envoyée au PC
 }
 - (UILabel*)label:(NSString*)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor*)c {
@@ -1933,9 +2032,11 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  _bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;_bar.hidden=YES;
  _bar.collapsed=[MPDefaults() boolForKey:@"touchBarFolded"];
  _bar.onFold=^{typeof(self) s=w;if(!s)return;[UIView animateWithDuration:.25 animations:^{[s layoutContent];}];};
- [_bar setTitle:@"Bureau" items:@[@[@"Fenêtre ⇄ iPad",@"@swap"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]]];
+ _tbTitle=@"Bureau";_tbItems=@[@[@"Fenêtre ⇄ iPad",@"@swap"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]];
+ [_bar setTitle:_tbTitle items:_tbItems];
  _bar.onAction=^(NSString *keys){
-  if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
+  if([keys isEqualToString:@"@pc"])[weakInput activateNext];   // PC suivant
+  else if([keys isEqualToString:@"@swap"])[weakInput send:@"WIN SWAP\n"];
   else if([keys isEqualToString:@"@numpad"])[w showNumpad];
   else if([keys isEqualToString:@"@keyboard"]){typeof(self) s=w;if(s){if(s->_touch.isFirstResponder)[s->_touch resignFirstResponder];else [s showKeyboard];}}
   else [weakInput send:[NSString stringWithFormat:@"KS %@\n",MPEsc(keys)]];
@@ -1971,6 +2072,9 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  MPSpeaker *spk=_speaker;
  _input.onSound=^(NSData *pcm){[spk feed:pcm];};
  _input.onClosed=^{[w sensorsOff:NO];[w soundOff];};
+ // plusieurs PC : bascule de l'un à l'autre (bouton « ⇄ » de la Touch Bar)
+ _input.onSwitching=^(NSString *pc){[w switchingTo:pc];};
+ _input.onPCsChanged=^{[w refreshBar];};
  [_input start];
  [self applyPreferences];
  [self refreshLastPC];
@@ -2053,7 +2157,8 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
    NSString *it=[p[i] stringByRemovingPercentEncoding];NSRange r=[it rangeOfString:@"|" options:NSBackwardsSearch];
    if(r.location!=NSNotFound)[items addObject:@[[it substringToIndex:r.location],[it substringFromIndex:r.location+1]]];
   }
-  [_bar setTitle:[p[1] stringByRemovingPercentEncoding]?:@"" items:items];
+  _tbTitle=[p[1] stringByRemovingPercentEncoding]?:@"";_tbItems=items;
+  [self refreshBar];
  } else if([k isEqualToString:@"SC"]){
   // liste des raccourcis du PC : « libellé|touches » encodés, séparés par des espaces
   NSMutableArray *items=[NSMutableArray array];
@@ -2571,6 +2676,25 @@ static NSString *MPOnMyIPad(void){
  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(sendPendingOrientation) object:nil];
  [self performSelector:@selector(sendPendingOrientation) withObject:nil afterDelay:.2];
 }
+// Touch Bar du PC actif ; avec plusieurs PC connectés : son nom en titre et un bouton « ⇄ autre PC » en premier
+- (void)refreshBar {
+ NSArray<MPLink*> *ls=_input.links;
+ NSMutableArray *items=[NSMutableArray arrayWithArray:_tbItems?:@[]];
+ NSString *title=_tbTitle?:@"";
+ if(ls.count>1){
+  MPLink *cur=_input.active;NSUInteger i=[ls indexOfObject:cur];
+  MPLink *next=ls[(i==NSNotFound?0:i+1)%ls.count];
+  [items insertObject:@[[@"⇄ " stringByAppendingString:next.pcName?:@"PC"],@"@pc"] atIndex:0];
+  title=[NSString stringWithFormat:@"%@ · %@",cur.pcName?:@"PC",title];
+ }
+ [_bar setTitle:title items:items];
+}
+// Bascule vers un autre PC : rideau jusqu'à la première image du nouveau PC
+- (void)switchingTo:(NSString*)pc {
+ [self sensorsOff:NO];[self soundOff];
+ if(_streaming)[self showCurtain];
+ [self showNotice:@"Changement de PC" text:[NSString stringWithFormat:@"Affichage de « %@ »…",pc?:@"PC"] code:nil ok:YES];
+}
 - (void)sendPendingOrientation {
  _pendingOrientation=nil;
  [self sendResolution];   // le PC bascule l'écran virtuel en portrait / paysage, à la taille de la zone d'image
@@ -2684,7 +2808,7 @@ static NSString *MPOnMyIPad(void){
  [self sensorsOff:YES];   // iOS coupe la caméra et le micro en arrière-plan
  UIApplication *app=UIApplication.sharedApplication;
  __block UIBackgroundTaskIdentifier task=[app beginBackgroundTaskWithExpirationHandler:^{[app endBackgroundTask:task];task=UIBackgroundTaskInvalid;}];
- [_input send:@"SLEEP"];
+ [_input sendAll:@"SLEEP"];   // tous les PC connectés retirent leur écran virtuel
  [_input disconnect];
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
   if(task!=UIBackgroundTaskInvalid){[app endBackgroundTask:task];task=UIBackgroundTaskInvalid;}

@@ -41,6 +41,7 @@ iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─�
 | **Capteurs** | Webcam (caméra virtuelle OBS), micro (VB-CABLE), son du PC sur les haut-parleurs de l'iPad |
 | **Partage** | Presse-papiers texte et images ; fenêtre « Fichiers PC ⇄ iPad » (double explorateur, choix du dossier de destination, glisser-déposer, dossiers entiers) ; « Envoyer vers > iPad » |
 | **Tableau de bord** | Horloge, processeur, mémoire, disque, réseau, durée d'allumage, et surveillance de sites / serveurs (HTTP ou ping) |
+| **Plusieurs PC** | Jusqu'à 4 PC connectés en même temps (Windows, Debian) : un seul affiché, les autres en veille ; bouton « ⇄ PC » de la Touch Bar pour basculer, le dernier PC choisi reprend la main au retour de l'iPad |
 | **Sécurité** | TLS 1.2 avec épinglage du certificat, appairage par code à 6 chiffres, verrouillage du PC quand l'iPad s'éloigne (option) |
 
 ## Gestes
@@ -127,7 +128,8 @@ Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR
 Lignes iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `F id:x:y:d|m|u|c …`, `PD/PM x y pression [e]`, `PU`, `RM dx dy`, `CL`, `CR`,
 `DD/DU`, `KS combo`, `T texte`, `K BACK|ENTER`, `RES largeur hauteur` (zone d'image sans la Touch Bar), `O P|L`, `P n`, `S fps mbps`, `SLEEP`, `CAM START w h fps|STOP`,
 `MIC START rate ch|STOP`, `SND START|STOP`, `DB START|STOP`, `WIN SWAP`, `CB texte`,
-`FS ITEMS id dossier nom|d/f|taille|date …`, `FS OK`, `FS ERR texte`, `FS DONE chemin`.
+`FS ITEMS id dossier nom|d/f|taille|date …`, `FS OK`, `FS ERR texte`, `FS DONE chemin`,
+`STANDBY` (l'iPad affiche un autre PC : plus d'image, liaison gardée par `Q` ↔ `P`), `ACTIVE` (retour sur ce PC).
 
 Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q saturation% débit`, `SC …` (raccourcis),
 `TB titre libellé|touches …` (Touch Bar), `KB 1 x y w h` / `KB 0` (clavier auto), `SND FMT rate 2`,
@@ -152,7 +154,7 @@ sudo apt install ./bsidedesk_*_all.deb    # dépendances (GStreamer, PipeWire, i
 - **Mises à jour** automatiques (toutes les 30 min) : `/usr/lib/bsidedesk/bsidedesk-update` lancé par `pkexec`
   (règle polkit `fr.bsidedesk.update` : sans mot de passe pour la session active, ne peut installer que la release officielle).
 - Démarrage automatique à l'ouverture de la session GNOME (`/etc/xdg/autostart`). Réglages et journal : `~/.config/bsidedesk/`.
-- L'iPad n'accepte qu'un PC à la fois : déconnectez l'autre PC (menu « Déconnecter ») pour passer de l'un à l'autre.
+- Plusieurs PC peuvent être connectés à l'iPad en même temps : bouton « ⇄ PC » de la Touch Bar pour passer de l'un à l'autre.
 
 ## Limites connues
 

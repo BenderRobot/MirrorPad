@@ -666,7 +666,11 @@ def check_update(manual=False):
         if not any(a['name'].endswith('_all.deb') for a in rel.get('assets', [])):
             return False
         log(f'mise à jour disponible : {remote}')
-        r = run('pkexec', '/usr/lib/bsidedesk/bsidedesk-update')
+        helper = '/usr/lib/bsidedesk/bsidedesk-update'
+        if os.environ.get('XDG_SESSION_TYPE') in ('wayland', 'x11'):
+            r = run('pkexec', helper)   # session GNOME ouverte : sans mot de passe (règle polkit)
+        else:   # terminal SSH : polkit ne connaît pas cette session, on passe par sudo (mot de passe demandé)
+            r = subprocess.run(['sudo', helper], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if r.returncode == 0:
             log(f'mise à jour installée : {remote}')
             return True
@@ -688,6 +692,8 @@ class App:
     def __init__(self):
         Gst.init(None)
         self.cfg = load_config()
+        if self.cfg.get('detected') == 'x264':
+            self.cfg['detected'] = ''   # pilote Intel installé entre-temps ? on refait le test de l'encodeur matériel
         save_config(self.cfg)
         self.ctx, self.der = identity()
         self.screen = VirtualScreen()
@@ -700,6 +706,7 @@ class App:
         self.want_size = self.size
         self.state = 'Démarrage…'
         self.sleeping = False
+        self.standby = False
         self.indicator = None
         self.status_item = None
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
@@ -857,6 +864,18 @@ class App:
                 log(f'écran de l\'iPad : {w}x{h} demandé')
                 self.want_size = (w, h)
                 self.streamer.restart()   # l'écran virtuel est recréé à la nouvelle taille
+        elif k == 'STANDBY':   # l'iPad affiche un autre PC : on garde la liaison, sans image ni écran virtuel
+            if not self.standby:
+                log("iPad passé sur un autre PC : en veille")
+            self.standby = True
+            self.input.release()
+            self.streamer.restart()
+        elif k == 'ACTIVE':
+            if self.standby:
+                log("iPad revenu sur ce PC")
+                self.standby = False
+                if s:
+                    s.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
         elif k == 'SLEEP':
             log('iPad verrouillé')
             self.sleeping = True
@@ -950,7 +969,15 @@ class App:
             session.send('SC ' + ' '.join(urllib.parse.quote(f'{l}|{c}') for l, c in self.cfg.get('shortcuts', DEFAULT_SHORTCUTS)))
             session.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
             time.sleep(0.4)   # l'iPad annonce la taille de sa zone d'image (« RES w h ») dès la connexion
+            self.standby = False
             while not session.closed and self.wanted:
+                if self.standby:
+                    if self.screen.active:
+                        self.screen.stop()
+                        log('écran virtuel retiré (veille)')
+                        self.set_state(f'En veille : {session.name} affiche un autre PC')
+                    time.sleep(0.5)
+                    continue
                 self.size = self.want_size
                 try:
                     node = self.screen.start()

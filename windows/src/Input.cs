@@ -23,6 +23,7 @@ namespace bSideDesk
         public Action<int, int> Tapped;             // appui / clic de l'utilisateur (détection des zones de saisie)                       // après une rotation : replacer l'écran (gauche / droite / dessus)
         public Action<int> HoldStream;              // couper ffmpeg et attendre n ms avant de le relancer (rotation)
         public Action Sleep;                        // l'iPad se verrouille
+        public Action<bool> Standby;                // l'iPad affiche un autre PC (true) ou revient sur celui-ci (false)
         public Action<string[]> Media;              // CAM / MIC / CB : traités par l'application
 
         public InputHandler(Config c) { cfg = c; }
@@ -311,6 +312,8 @@ namespace bSideDesk
             {
                 case "F": TouchFrame(p); break;
                 case "SLEEP": if (Sleep != null) Sleep(); break;
+                case "STANDBY": ReleaseAll(); if (Standby != null) Standby(true); break;
+                case "ACTIVE": if (Standby != null) Standby(false); break;
                 case "CAM": case "MIC": case "CB": case "SND": case "WIN": case "DB": case "FS": if (Media != null) Media(p); break;
                 case "PD": case "PM": case "PU": Pen(p); break;
                 case "RM": if (p.Length >= 3 && int.TryParse(p[1], out dx) && int.TryParse(p[2], out dy)) Native.MoveRelative(dx, dy); break;

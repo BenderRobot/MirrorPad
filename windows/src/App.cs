@@ -43,6 +43,7 @@ namespace bSideDesk
         string lastRoute = "";
         volatile bool restartRequested;   // ffmpeg arrêté exprès (rotation, qualité) : pas un échec
         DateTime lastWake = DateTime.MinValue;
+        volatile bool standby;   // l'iPad affiche un autre PC
         bool extendTried, wakeFailLogged;   // « Étendre » tenté pour cette connexion ; échec déjà signalé
         DateTime holdUntil = DateTime.MinValue;   // pas de capture avant cette heure (bureau en cours de réorganisation)
         volatile Session session;
@@ -84,6 +85,15 @@ namespace bSideDesk
             streamer.OutputIndex = () => { var d = input.TargetDevice; int i = string.IsNullOrEmpty(d) ? -1 : Displays.CaptureIndex(d); return i >= 0 ? i : cfg.Output; };
             input.AfterDriverRestart = () => { WakeVirtual(); input.RefreshBounds(); PlaceVirtual(); };
             input.HoldStream = ms => { holdUntil = DateTime.Now.AddMilliseconds(ms); if (ms > 0) { restartRequested = true; streamer.Stop(); } };
+            // plusieurs PC sur le même iPad : en veille, on garde la liaison mais on n'envoie plus d'image
+            input.Standby = on =>
+            {
+                if (on == standby) return;
+                standby = on;
+                Log.Write(on ? "iPad passé sur un autre PC : bSideDesk en veille" : "iPad revenu sur ce PC");
+                if (on) { restartRequested = true; streamer.Stop(); sound.Stop(); camera.Stop(); mic.Stop(); dashboard.Stop(); }
+                else lastFg = "";   // la Touch Bar de ce PC est renvoyée
+            };
             input.Sleep = () => { Log.Write("iPad verrouillé"); sleepRequested = true; lastAlive = DateTime.MinValue; var s = session; if (s != null) s.Close(); streamer.Stop(); SleepVirtual(); };
             ffmpeg = Streamer.FindFfmpeg();
 
@@ -315,8 +325,16 @@ namespace bSideDesk
                 s.Send("SC " + string.Join(" ", cfg.Shortcuts.Select(x => Uri.EscapeDataString(x.Label + "|" + x.Keys))));
 
                 // diffusion : on relance ffmpeg tant que la session vit (rotation, qualité, encodeur en échec…)
+                standby = false;
                 while (wanted && !s.IsClosed)
                 {
+                    if (standby)
+                    {
+                        // en veille : une ligne par seconde pour garder la liaison, en attendant « ACTIVE »
+                        s.Send("Q 0 0");
+                        Thread.Sleep(1000);
+                        continue;
+                    }
                     while (DateTime.Now < holdUntil && !s.IsClosed) Thread.Sleep(40);   // rotation : on laisse Windows finir
                     if (s.IsClosed) break;
                     restartRequested = false;
