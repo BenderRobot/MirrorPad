@@ -15,8 +15,10 @@ echo "$V" > "$R/usr/lib/bsidedesk/version.txt"
 cat > "$R/usr/bin/bsidedesk" <<'LAUNCH'
 #!/bin/sh
 if [ $# -gt 0 ]; then exec /usr/bin/python3 /usr/lib/bsidedesk/bsidedesk.py "$@"; fi
+n=0
 while :; do
   /usr/bin/python3 /usr/lib/bsidedesk/bsidedesk.py && exit 0
+  n=$((n+1)); [ $n -ge 10 ] && exit 1   # plante en boucle (session fermée…) : on abandonne
   sleep 5
 done
 LAUNCH

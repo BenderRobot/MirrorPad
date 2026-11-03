@@ -1298,14 +1298,9 @@ class App:
             self.streamer.restart()
 
     def apply_layout(self):
-        size, inplace = self.size, self.resizing_inplace
+        size = self.size
         only, scale = self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))
         try:
-            if inplace:
-                # écran redimensionné sur place : GNOME 43 ne réajuste pas les fenêtres en plein écran (vidéo YouTube…)
-                # à la nouvelle taille ; un aller-retour d'échelle les oblige à se recaler sur l'écran
-                self.screen.layout(only, '1' if scale != '1' else '2', size)
-                time.sleep(0.4)
             log("écran de l'iPad : " + self.screen.layout(only, scale, size))
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
             if self.resizing_inplace and size == self.size:
@@ -1471,6 +1466,10 @@ class App:
 
 
 def main():
+    if len(sys.argv) == 1 and not Gtk.init_check()[0]:
+        # plus de session graphique (GNOME fermé ou planté) : on s'arrête, le démarrage auto relancera bSideDesk
+        log("pas de session graphique : bSideDesk s'arrête")
+        sys.exit(0)
     ap = argparse.ArgumentParser(description='bSideDesk pour GNOME (Wayland)')
     ap.add_argument('--pair', action='store_true', help="confirmer l'appairage d'un iPad depuis ce terminal")
     ap.add_argument('--update', action='store_true', help='rechercher et installer une mise à jour')
