@@ -1305,9 +1305,11 @@ static NSArray<NSArray<NSString*>*> *MPFeatures(void){
 
 static NSUserDefaults *MPDefaults(void){
  NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
- [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES,@"pcSound":@YES,@"touchBar":@YES,@"touchBarFolded":@NO}];
+ [d registerDefaults:@{@"longPress":@YES,@"inertia":@YES,@"hud":@NO,@"fps":@30,@"mbps":@12,@"inputMode":@0,@"penEraser":@NO,@"clipboard":@YES,@"pcSound":@YES,@"touchBar":@YES,@"touchBarFolded":@NO,@"pcKeyboard":@"auto"}];
  return d;
 }
+// réglage « Clavier des PC » : envoyé à chaque PC (Debian règle GNOME sur cette disposition ; Windows tape en Unicode)
+static NSString *MPKeyboardLine(void){return [NSString stringWithFormat:@"KL %@\n",[MPDefaults() stringForKey:@"pcKeyboard"]?:@"auto"];}
 static NSString *MPAgo(NSDate *date){
  NSTimeInterval t=-date.timeIntervalSinceNow;
  if(t<90)return @"à l'instant";
@@ -1331,7 +1333,7 @@ static NSString *MPAgo(NSDate *date){
 - (void)showIn:(UIView*)parent;
 @end
 @implementation MPSettingsPanel {
- UISegmentedControl *_fps,*_quality,*_inputMode,*_penTool;
+ UISegmentedControl *_fps,*_quality,*_inputMode,*_penTool,*_kbLayout;
  UISwitch *_longPress,*_inertia,*_hud,*_clip,*_sound,*_bar;
  UIStackView *_history,*_paired;
 }
@@ -1408,6 +1410,9 @@ static const int MPQualities[3]={6,12,20};
  tools.distribution=UIStackViewDistributionFillEqually;tools.spacing=10;
  UIStackView *sensors=[[UIStackView alloc] initWithArrangedSubviews:@[[self tool:@"Webcam" action:@selector(openCamera)],[self tool:@"Micro" action:@selector(toggleMic)],[self tool:@"Envoyer des photos" action:@selector(openPhotos)],[self tool:@"Envoyer un fichier" action:@selector(openFiles)]]];
  sensors.distribution=UIStackViewDistributionFillEqually;sensors.spacing=10;
+ _kbLayout=[[UISegmentedControl alloc] initWithItems:@[@"Auto",@"AZERTY",@"QWERTY"]];_kbLayout.tintColor=UIColor.whiteColor;
+ [_kbLayout addTarget:self action:@selector(kbLayoutChanged) forControlEvents:UIControlEventValueChanged];
+ UILabel *kbNote=MPLabel(@"Disposition utilisée par les PC pour ce que vous tapez. AZERTY / QWERTY : un seul réglage pour tous les PC (sur Debian, GNOME est mis sur cette disposition).",13,UIFontWeightRegular,.6,0);
  _fps=[self segments:@[@"30 i/s",@"60 i/s"]];
  _quality=[self segments:@[@"Éco",@"Standard",@"Max"]];
  _longPress=[self toggle];_inertia=[self toggle];_hud=[self toggle];_clip=[self toggle];_sound=[self toggle];_bar=[self toggle];
@@ -1418,6 +1423,7 @@ static const int MPQualities[3]={6,12,20};
  UIStackView *st=[[UIStackView alloc] initWithArrangedSubviews:@[head,
    [self section:@"MODE"],[self row:@"Le doigt agit comme" control:_inputMode],[self row:@"Outil du stylet" control:_penTool],modeNote,tools,
    [self section:@"CAPTEURS DE L'IPAD"],sensors,
+   [self section:@"CLAVIER"],[self row:@"Clavier des PC" control:_kbLayout],kbNote,
    [self section:@"PARTAGE"],[self row:@"Presse-papiers partagé avec le PC" control:_clip],[self row:@"Son du PC sur l'iPad" control:_sound],
    [self section:@"IMAGE"],[self row:@"Fluidité" control:_fps],[self row:@"Qualité" control:_quality],note,
    [self section:@"GESTES"],[self row:@"Appui long = clic droit" control:_longPress],[self row:@"Défilement avec élan" control:_inertia],
@@ -1452,6 +1458,7 @@ static const int MPQualities[3]={6,12,20};
  NSUserDefaults *d=MPDefaults();
  _fps.selectedSegmentIndex=[d integerForKey:@"fps"]>=60?1:0;
  NSInteger m=[d integerForKey:@"mbps"];_quality.selectedSegmentIndex=m<=8?0:(m<=15?1:2);
+ NSString *kl=[d stringForKey:@"pcKeyboard"];_kbLayout.selectedSegmentIndex=[kl isEqualToString:@"fr"]?1:([kl isEqualToString:@"us"]?2:0);
  _inputMode.selectedSegmentIndex=[d integerForKey:@"inputMode"];_penTool.selectedSegmentIndex=[d boolForKey:@"penEraser"]?1:0;
  _longPress.on=[d boolForKey:@"longPress"];_clip.on=[d boolForKey:@"clipboard"];_sound.on=[d boolForKey:@"pcSound"];_inertia.on=[d boolForKey:@"inertia"];_hud.on=[d boolForKey:@"hud"];_bar.on=[d boolForKey:@"touchBar"];
  for(UIView *v in _history.arrangedSubviews){[_history removeArrangedSubview:v];[v removeFromSuperview];}
@@ -1479,6 +1486,10 @@ static const int MPQualities[3]={6,12,20};
  int fps=_fps.selectedSegmentIndex==1?60:30,mbps=MPQualities[MAX(0,_quality.selectedSegmentIndex)];
  NSUserDefaults *d=MPDefaults();[d setInteger:fps forKey:@"fps"];[d setInteger:mbps forKey:@"mbps"];
  if(self.onQuality)self.onQuality(fps,mbps);
+}
+- (void)kbLayoutChanged {
+ [MPDefaults() setObject:@[@"auto",@"fr",@"us"][MAX(0,_kbLayout.selectedSegmentIndex)] forKey:@"pcKeyboard"];
+ if(self.onChange)self.onChange();
 }
 - (void)togglesChanged {
  NSUserDefaults *d=MPDefaults();
@@ -2241,6 +2252,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  // première connexion : on ne pousse pas l'ancien contenu ; bascule depuis un autre PC : on envoie ce qui y a été copié
  _clipCount=_clipPush?-1:UIPasteboard.generalPasteboard.changeCount;_clipPush=NO;
  _lastRes=nil;[self sendResolution];   // taille exacte de la zone d'image : le PC y règle l'écran virtuel
+ [_input send:MPKeyboardLine()];   // clavier des PC choisi dans les réglages
  NSUserDefaults *d=MPDefaults();
  if([d boolForKey:@"qualityPending"]){
   [_input send:[NSString stringWithFormat:@"S %ld %ld\n",(long)[d integerForKey:@"fps"],(long)[d integerForKey:@"mbps"]]];
@@ -2313,6 +2325,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (void)applyPreferences {
  NSUserDefaults *d=MPDefaults();
  [self syncSound];
+ if(_input.connected)[_input send:MPKeyboardLine()];
  _touch.longPressEnabled=[d boolForKey:@"longPress"];
  _touch.inertiaEnabled=[d boolForKey:@"inertia"];
  _touch.inputMode=[d integerForKey:@"inputMode"];

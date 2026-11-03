@@ -1344,6 +1344,8 @@ class App:
                 self.sound.start(s)
             elif p[1] == 'STOP':
                 self.sound.stop()
+        elif k == 'KL' and len(p) >= 2:   # clavier choisi dans les réglages de l'iPad : auto, fr (AZERTY), us (QWERTY)
+            self.set_keyboard_layout(p[1])
         elif k == 'CB' and len(p) >= 2:   # texte copié sur l'iPad ou sur l'autre PC
             if self.cfg.get('clipboard', True):
                 self.screen.set_text(urllib.parse.unquote(' '.join(p[1:])))
@@ -1366,6 +1368,42 @@ class App:
             return
 
     REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
+    KB_LAYOUTS = {'fr': 'Français (AZERTY)', 'us': 'Anglais (QWERTY)'}
+
+    def set_keyboard_layout(self, lay):
+        """Réglage « Clavier des PC » de l'iPad. AZERTY / QWERTY : GNOME est mis sur cette seule disposition
+        et bSideDesk tape avec la même table ; plus aucune ambiguïté entre applications (Firefox, Chromium…).
+        Auto : on rend à GNOME les dispositions qu'il avait avant."""
+        try:
+            st = Gio.Settings.new('org.gnome.desktop.input-sources')
+            cur = st.get_value('sources')
+            if lay in self.KB_LAYOUTS:
+                want = GLib.Variant('a(ss)', [('xkb', lay)])
+                if not cur.equal(want):
+                    if 'saved_input_sources' not in self.cfg:
+                        self.cfg['saved_input_sources'] = [list(x) for x in cur.unpack()]
+                    st.set_value('sources', want)
+                    st.set_value('mru-sources', want)
+                    Gio.Settings.sync()
+                    log(f'clavier des PC : {self.KB_LAYOUTS[lay]} (réglage de l\'iPad), disposition de GNOME changée')
+                try:
+                    with open(LAYOUT_FILE, 'w') as f:
+                        f.write(lay)
+                except OSError:
+                    pass
+            elif 'saved_input_sources' in self.cfg:
+                old = [tuple(x) for x in self.cfg.pop('saved_input_sources')]
+                if old:
+                    st.set_value('sources', GLib.Variant('a(ss)', old))
+                    Gio.Settings.sync()
+                log("clavier des PC : automatique (réglage de l'iPad), dispositions de GNOME d'origine remises")
+            else:
+                return
+            self.cfg['keyboard_layout'] = lay
+            save_config(self.cfg)
+            self.input.keymap = None   # table refaite au prochain caractère
+        except Exception as e:  # noqa: BLE001
+            log(f'clavier des PC : {e}')
 
     def global_scale(self, on):
         """Échelle ×2 « par défaut » de GNOME (org.gnome.desktop.interface scaling-factor) pendant la session iPad.
