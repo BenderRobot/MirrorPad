@@ -43,6 +43,7 @@ namespace bSideDesk
         string lastRoute = "";
         volatile bool restartRequested;   // ffmpeg arrêté exprès (rotation, qualité) : pas un échec
         DateTime lastWake = DateTime.MinValue;
+        bool extendTried, wakeFailLogged;   // « Étendre » tenté pour cette connexion ; échec déjà signalé
         DateTime holdUntil = DateTime.MinValue;   // pas de capture avant cette heure (bureau en cours de réorganisation)
         volatile Session session;
         string state = "";
@@ -295,6 +296,7 @@ namespace bSideDesk
                 if (s.Host != lastRoute) { Log.Write("connexion par " + (s.Host == "USB" ? "câble USB" : "Wi-Fi (" + s.Host + ")")); lastRoute = s.Host; }
                 session = s;              // la session compte comme « vivante » dès maintenant…
                 lastAlive = DateTime.Now; // …pour que la règle des 20 s ne retire pas l'écran pendant qu'on le rebranche
+                extendTried = false;
                 WakeVirtual();   // l'écran virtuel revient avant l'image
                 PlaceVirtual();
                 input.Reply = line => s.Send(line);
@@ -445,12 +447,16 @@ namespace bSideDesk
                 int x, y, w, h;
                 if (string.IsNullOrEmpty(dev) || !Displays.IsVirtual(dev) || !Native.GetDisplay(dev, out x, out y, out w, out h)) return;
                 var main = Screen.PrimaryScreen.Bounds;
+                // tous les autres écrans (portable + écrans externes) : l'iPad se met à côté de l'ensemble, sans chevaucher
+                var others = Screen.AllScreens.Where(sc => !string.Equals(sc.DeviceName, dev, StringComparison.OrdinalIgnoreCase)).Select(sc => sc.Bounds).ToList();
+                int minX = others.Count > 0 ? others.Min(b => b.Left) : main.Left, maxX = others.Count > 0 ? others.Max(b => b.Right) : main.Right;
+                int minY = others.Count > 0 ? others.Min(b => b.Top) : main.Top;
                 int nx, ny;
                 switch (side)
                 {
-                    case "left": nx = main.Left - w; ny = main.Top + (main.Height - h) / 2; break;
-                    case "above": nx = main.Left + (main.Width - w) / 2; ny = main.Top - h; break;
-                    default: nx = main.Right; ny = main.Top + (main.Height - h) / 2; break;
+                    case "left": nx = minX - w; ny = main.Top + (main.Height - h) / 2; break;
+                    case "above": nx = main.Left + (main.Width - w) / 2; ny = minY - h; break;
+                    default: nx = maxX; ny = main.Top + (main.Height - h) / 2; break;
                 }
                 if (nx == x && ny == y) return;
                 int r = Native.SetPosition(dev, nx, ny);
@@ -492,23 +498,39 @@ namespace bSideDesk
                 if (found != null && found != cfg.VirtualDevice) { Log.Write("écran virtuel : " + cfg.VirtualDevice + " est devenu " + found); cfg.VirtualDevice = found; cfg.Save(); }
                 int x, y, w, h;
                 if (Native.GetDisplay(dev, out x, out y, out w, out h)) { if (cfg.VirtualDetached) { cfg.VirtualDetached = false; cfg.Save(); } input.RefreshBounds(); return; }
-                int r = Native.AttachDisplay(dev, cfg.VirtualX, cfg.VirtualY, cfg.VirtualW, cfg.VirtualH);
-                if (r != 0 || !Native.GetDisplay(dev, out x, out y, out w, out h))
-                {
-                    // repli : « Étendre » sur tous les écrans, puis on remet la définition mémorisée
-                    int e = Native.ExtendAll();
-                    Thread.Sleep(1500);
-                    var again = Displays.Virtual(out attachedNow);
-                    if (again != null) dev = again;
-                    if (!Native.GetDisplay(dev, out x, out y, out w, out h))
+                // 1. activation du seul écran virtuel (les autres écrans ne bougent pas)
+                int r = Displays.Enable(dev);
+                Thread.Sleep(800);
+                var again = Displays.Virtual(out attachedNow); if (again != null) dev = again;
+                bool ok = Native.GetDisplay(dev, out x, out y, out w, out h);
+                // 2. ancienne méthode : rebranchement dans une définition proposée par le pilote
+                int a = 0;
+                if (!ok)
+                    foreach (var sz in new[] { new[] { cfg.VirtualW, cfg.VirtualH }, new[] { 2048, 1536 }, new[] { 1536, 2048 } })
                     {
-                        Log.Write("impossible de rebrancher l'écran virtuel (codes " + r + " / " + e + ") : Windows + P > Étendre");
-                        return;
+                        if (sz[0] <= 0) continue;
+                        a = Native.AttachDisplay(dev, cfg.VirtualX, cfg.VirtualY, sz[0], sz[1]);
+                        if (a == 0 && Native.GetDisplay(dev, out x, out y, out w, out h)) { ok = true; break; }
                     }
-                    if (cfg.VirtualW > 0 && (w != cfg.VirtualW || h != cfg.VirtualH)) Native.SetResolution(dev, cfg.VirtualW, cfg.VirtualH);
+                // 3. dernier recours, une seule fois par connexion : Windows + P > « Étendre » (fait clignoter tous les écrans)
+                int e = 0;
+                if (!ok && !extendTried)
+                {
+                    extendTried = true;
+                    e = Native.ExtendAll();
+                    Thread.Sleep(1500);
+                    again = Displays.Virtual(out attachedNow); if (again != null) dev = again;
+                    ok = Native.GetDisplay(dev, out x, out y, out w, out h);
                 }
+                if (!ok)
+                {
+                    if (!wakeFailLogged) Log.Write("impossible de rebrancher l'écran virtuel " + dev + " (codes " + r + " / " + a + " / " + e + ") : Paramètres > Affichage > écran 3 > « Étendre le bureau à cet écran »");
+                    wakeFailLogged = true;
+                    return;
+                }
+                wakeFailLogged = false;
                 cfg.VirtualDevice = dev; cfg.VirtualDetached = false; cfg.Save();
-                Log.Write("écran virtuel rebranché (" + cfg.VirtualW + "x" + cfg.VirtualH + ")");
+                Log.Write("écran virtuel rebranché (" + dev + ", " + w + "x" + h + ")");
                 Thread.Sleep(1500);   // le temps que Windows et la capture voient l'écran
                 input.RefreshBounds();
             }
