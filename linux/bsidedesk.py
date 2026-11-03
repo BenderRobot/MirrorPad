@@ -47,7 +47,7 @@ DEFAULT_SHORTCUTS = [('Copier', 'ctrl+c'), ('Coller', 'ctrl+v'), ('Couper', 'ctr
 # Touch Bar pour GNOME : raccourcis par défaut de GNOME 43 (Super = touche Windows)
 TOUCH_BAR = ['Clavier|@keyboard', 'Rechercher|win', 'Applications|win+a', 'Fenêtre suivante|alt+tab', 'Agrandir|win+up',
              '◀ Moitié|win+left', 'Moitié ▶|win+right', 'Réduire|win+h', 'Fermer|alt+f4', 'Notifications|win+v',
-             'Copier|ctrl+c', 'Coller|ctrl+v', 'Annuler|ctrl+z', 'Capture|printscreen', 'Pavé numérique|@numpad']
+             'Copier|ctrl+c', 'Coller|ctrl+v', 'Annuler|ctrl+z', 'Capture|printscreen', 'Plein écran|f11', 'Pavé numérique|@numpad']
 ENCODER_NAMES = {'va': 'Intel VA-API', 'vaapi': 'Intel VA-API (gstreamer-vaapi)', 'x264': 'Processeur (x264)'}
 
 

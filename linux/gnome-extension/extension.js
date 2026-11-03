@@ -31,6 +31,19 @@ class BSideDeskExtension {
         });
     }
 
+    // ce que GNOME affiche réellement dans la fenêtre : surfaces de l'application (et sous-surfaces), position et taille
+    _tree(a, depth, out) {
+        if (depth > 4)
+            return;
+        for (const c of a.get_children()) {
+            const [x, y] = c.get_position();
+            const [w, h] = c.get_size();
+            const name = (c.constructor && c.constructor.$gtype) ? c.constructor.$gtype.name : 'acteur';
+            out.push(`${depth}:${name} ${Math.round(w)}x${Math.round(h)}+${Math.round(x)}+${Math.round(y)}${c.visible ? '' : ' (caché)'}`);
+            this._tree(c, depth + 1, out);
+        }
+    }
+
     // step 1 : recaler le cadre ; 2 : forcer un déplacement ; 3 : dernier recours, plein écran retiré/remis d'un coup
     _refit(step) {
         for (const actor of global.get_window_actors()) {
@@ -47,6 +60,10 @@ class BSideDeskExtension {
                 const [ax, ay] = actor.get_position();
                 const same = r => r.x === g.x && r.y === g.y && r.width === g.width && r.height === g.height;
                 const ok = same(f) && b.x === g.x && b.y === g.y && Math.round(ax) === g.x && Math.round(ay) === g.y;
+                const tree = [];
+                this._tree(actor, 0, tree);
+                log(`bSideDesk: passe ${step} ×${global.display.get_monitor_scale(i)} ` +
+                    `${win.get_client_type() === 0 ? 'Wayland' : 'X11'} contenu : ${tree.join(' | ')}`);
                 log(`bSideDesk: passe ${step} « ${win.get_title()} » écran ${g.width}x${g.height}+${g.x}+${g.y} ` +
                     `cadre ${f.width}x${f.height}+${f.x}+${f.y} tampon ${b.width}x${b.height}+${b.x}+${b.y} ` +
                     `acteur +${Math.round(ax)}+${Math.round(ay)} ${ok ? 'OK' : 'décalé'}`);
