@@ -14,6 +14,14 @@ class BSideDeskExtension {
         });
         // entrée / sortie du plein écran : on revérifie aussi (et on retire notre correction si elle ne sert plus)
         this._fsSig = global.display.connect('in-fullscreen-changed', () => this._schedule());
+        // disposition de clavier active (Français, Anglais…) : écrite pour bSideDesk, qui tape avec la bonne table
+        try {
+            this._ism = imports.ui.status.keyboard.getInputSourceManager();
+            this._ismSig = this._ism.connect('current-source-changed', () => this._writeLayout());
+            this._writeLayout();
+        } catch (e) {
+            logError(e, 'bSideDesk');
+        }
     }
 
     disable() {
@@ -21,7 +29,10 @@ class BSideDeskExtension {
             Main.layoutManager.disconnect(this._sig);
         if (this._fsSig)
             global.display.disconnect(this._fsSig);
-        this._sig = this._fsSig = 0;
+        if (this._ism && this._ismSig)
+            this._ism.disconnect(this._ismSig);
+        this._ism = null;
+        this._sig = this._fsSig = this._ismSig = 0;
         this._timers.forEach(id => GLib.source_remove(id));
         this._timers = [];
         if (this._reenter)
@@ -96,6 +107,16 @@ class BSideDeskExtension {
                 logError(e, 'bSideDesk');
             }
         }
+    }
+
+    _writeLayout() {
+        const src = this._ism && this._ism.currentSource;
+        if (!src || src.type !== 'xkb')
+            return;
+        const dir = GLib.build_filenamev([GLib.get_user_config_dir(), 'bsidedesk']);
+        GLib.mkdir_with_parents(dir, 0o755);
+        GLib.file_set_contents(GLib.build_filenamev([dir, 'disposition-clavier']), src.id);
+        log(`bSideDesk: disposition de clavier active « ${src.id} »`);
     }
 
     _soon() {

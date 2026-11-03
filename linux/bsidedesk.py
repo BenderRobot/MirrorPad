@@ -34,6 +34,7 @@ PORT = 7272
 REPO = 'BenderRobot/bsidedesk'
 DIR = os.path.join(GLib.get_user_config_dir(), 'bsidedesk')
 CONFIG = os.path.join(DIR, 'config.json')
+LAYOUT_FILE = os.path.join(DIR, 'disposition-clavier')   # écrit par l'extension GNOME bSideDesk
 LOG = os.path.join(DIR, 'bsidedesk.log')
 CERT, KEY = os.path.join(DIR, 'pc-cert.pem'), os.path.join(DIR, 'pc-key.pem')
 PAIR_REQ, PAIR_ANS = os.path.join(DIR, 'pair-request.json'), os.path.join(DIR, 'pair-answer')
@@ -787,6 +788,17 @@ def current_keymap():
     """Disposition de clavier de la session GNOME (Paramètres > Clavier), ex. « fr », « fr+oss », « us »."""
     try:
         st = Gio.Settings.new('org.gnome.desktop.input-sources')
+        # disposition réellement utilisée par GNOME, écrite par l'extension bSideDesk (la plus sûre)
+        try:
+            with open(LAYOUT_FILE) as f:
+                live = f.read().strip()
+        except OSError:
+            live = ''
+        if live:
+            layout, _, variant = live.partition('+')
+            m = XkbMap(layout, variant, ','.join(st.get_strv('xkb-options')))
+            log(f'clavier : disposition « {live} » (active dans GNOME)')
+            return m
         # disposition ACTIVE (première des « récentes ») plutôt que la première de la liste
         mru = [v for t, v in st.get_value('mru-sources').unpack() if t == 'xkb']
         src = mru[:1] or [v for t, v in st.get_value('sources').unpack() if t == 'xkb'] or ['us']
@@ -1018,11 +1030,20 @@ class FocusWatcher:
         return False
 
     def editable(self, acc):
+        """Zone de saisie ? État « modifiable », rôle de champ texte, ou interface de texte modifiable
+        (Chromium n'annonce pas toujours l'état « modifiable » sur ses champs de recherche ou sa barre d'adresse)."""
         try:
             st = acc.get_state_set()
-            if not st.contains(Atspi.StateType.EDITABLE) or st.contains(Atspi.StateType.READ_ONLY):
+            role = acc.get_role()
+            if st.contains(Atspi.StateType.READ_ONLY) or role in self.NOT_TEXT:
                 return False
-            return acc.get_role() not in self.NOT_TEXT
+            if st.contains(Atspi.StateType.EDITABLE) or role in (Atspi.Role.ENTRY, Atspi.Role.PASSWORD_TEXT,
+                                                                 Atspi.Role.SPIN_BUTTON, Atspi.Role.TERMINAL):
+                return True
+            try:
+                return acc.get_editable_text_iface() is not None
+            except Exception:  # noqa: BLE001
+                return False
         except Exception:  # noqa: BLE001
             return False
 
@@ -1105,6 +1126,9 @@ class App:
         self.sound = Sound()
         try:   # disposition de clavier changée dans GNOME : on recharge la table des touches
             self.kb_settings = Gio.Settings.new('org.gnome.desktop.input-sources')
+            # disposition écrite par l'extension GNOME (changement Super+Espace compris) : table refaite
+            self.layout_mon = Gio.File.new_for_path(LAYOUT_FILE).monitor_file(Gio.FileMonitorFlags.NONE, None)
+            self.layout_mon.connect('changed', lambda *a: setattr(self.input, 'keymap', None))
             for key in ('sources', 'mru-sources'):   # disposition ajoutée ou changée (Super+Espace) : table refaite
                 self.kb_settings.connect('changed::' + key, lambda *a: setattr(self.input, 'keymap', None))
         except Exception:  # noqa: BLE001

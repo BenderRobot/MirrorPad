@@ -4,5 +4,5 @@
   "description": "Recale les fenêtres plein écran (vidéos) quand l'écran de l'iPad tourne.",
   "shell-version": ["42", "43", "44"],
   "url": "https://github.com/BenderRobot/bsidedesk",
-  "version": 8
+  "version": 9
 }
