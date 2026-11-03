@@ -311,7 +311,7 @@ namespace bSideDesk
             {
                 case "F": TouchFrame(p); break;
                 case "SLEEP": if (Sleep != null) Sleep(); break;
-                case "CAM": case "MIC": case "CB": case "SND": case "WIN": case "DB": if (Media != null) Media(p); break;
+                case "CAM": case "MIC": case "CB": case "SND": case "WIN": case "DB": case "FS": if (Media != null) Media(p); break;
                 case "PD": case "PM": case "PU": Pen(p); break;
                 case "RM": if (p.Length >= 3 && int.TryParse(p[1], out dx) && int.TryParse(p[2], out dy)) Native.MoveRelative(dx, dy); break;
                 case "CL":

@@ -39,7 +39,7 @@ iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─�
 | **Pavé numérique** | Touches pavé numérique vers le PC + calculatrice locale avec historique (un résultat touché est tapé sur le PC) |
 | **Présentateur** | Touch Bar PowerPoint : mode Présentateur (Alt+F5) sur l'iPad, diapo précédente / suivante, laser, stylo, écran noir |
 | **Capteurs** | Webcam (caméra virtuelle OBS), micro (VB-CABLE), son du PC sur les haut-parleurs de l'iPad |
-| **Partage** | Presse-papiers texte et images, photos et fichiers iPad → PC, fichiers PC → iPad (« Envoyer vers > iPad ») |
+| **Partage** | Presse-papiers texte et images ; fenêtre « Fichiers PC ⇄ iPad » (double explorateur, choix du dossier de destination, glisser-déposer, dossiers entiers) ; « Envoyer vers > iPad » |
 | **Tableau de bord** | Horloge, processeur, mémoire, disque, réseau, durée d'allumage, et surveillance de sites / serveurs (HTTP ou ping) |
 | **Sécurité** | TLS 1.2 avec épinglage du certificat, appairage par code à 6 chiffres, verrouillage du PC quand l'iPad s'éloigne (option) |
 
@@ -126,11 +126,14 @@ Poignée de main : `HELLO 2 <idPC> <nomPC>` → `AUTH <idIPad> <jeton>` ou `PAIR
 
 Lignes iPad → PC : `D/M/U/R x y`, `W n`, `Z n`, `F id:x:y:d|m|u|c …`, `PD/PM x y pression [e]`, `PU`, `RM dx dy`, `CL`, `CR`,
 `DD/DU`, `KS combo`, `T texte`, `K BACK|ENTER`, `RES largeur hauteur` (zone d'image sans la Touch Bar), `O P|L`, `P n`, `S fps mbps`, `SLEEP`, `CAM START w h fps|STOP`,
-`MIC START rate ch|STOP`, `SND START|STOP`, `DB START|STOP`, `WIN SWAP`, `CB texte`.
+`MIC START rate ch|STOP`, `SND START|STOP`, `DB START|STOP`, `WIN SWAP`, `CB texte`,
+`FS ITEMS id dossier nom|d/f|taille|date …`, `FS OK`, `FS ERR texte`, `FS DONE chemin`.
 
 Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q saturation% débit`, `SC …` (raccourcis),
 `TB titre libellé|touches …` (Touch Bar), `KB 1 x y w h` / `KB 0` (clavier auto), `SND FMT rate 2`,
-`DB cpu ramUtilisée ramTotale envoiKo réceptionKo disque% minutes nomPC`, `DBX nom|ok|détail …`, `CB texte`, `MSG texte`, `P n`.
+`DB cpu ramUtilisée ramTotale envoiKo réceptionKo disque% minutes nomPC`, `DBX nom|ok|détail …`, `CB texte`, `MSG texte`, `P n`,
+`FS LIST id dossier`, `FS MKDIR dossier`, `FS DEL chemin`, `FS REN chemin nom`, `FS GET jeton chemin` (dossier `Documents/bSideDesk` de l'iPad ;
+fichiers PC → iPad nommés `@/dossier/nom`, iPad → PC nommés `jeton|chemin`).
 
 ## Linux (Debian, session X11)
 

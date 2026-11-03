@@ -130,47 +130,75 @@ namespace bSideDesk
     {
         public const byte FrameType = 8;
         const int Chunk = 256 * 1024;
-        readonly Dictionary<uint, Tuple<FileStream, string>> incoming = new Dictionary<uint, Tuple<FileStream, string>>();
-        public Action<string> Received;   // chemin du fichier reçu complet
+        class Incoming { public FileStream Fs; public string Path; public Download Dl; }
+        readonly Dictionary<uint, Incoming> incoming = new Dictionary<uint, Incoming>();
+        public Action<string> Received;   // chemin d'un fichier reçu complet (envoi spontané de l'iPad)
         static int nextId = Environment.TickCount;
+
+        // Téléchargement demandé par l'explorateur (« FS GET jeton chemin ») : l'iPad nomme ses trames « jeton|chemin »
+        public class Download { public string Dir; public Action<long> Progress; public Action<string> FileDone; }
+        public static readonly Dictionary<string, Download> Downloads = new Dictionary<string, Download>();
 
         public void Receive(byte[] f)
         {
             if (f.Length < 5) return;
             uint id = BitConverter.ToUInt32(f, 0); byte flags = f[4]; int off = 5;
+            Incoming cur;
             lock (incoming)
             {
-                Tuple<FileStream, string> cur;
                 if ((flags & 1) != 0)
                 {
                     if (f.Length < 7) return;
                     int n = f[5] << 8 | f[6]; off = 7 + n;
                     if (f.Length < off) return;
-                    var name = Encoding.UTF8.GetString(f, 7, n);
-                    foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-                    if (name.Length == 0) name = "fichier";
-                    Directory.CreateDirectory(Inbox.Dir);
-                    var path = Path.Combine(Inbox.Dir, name);
-                    for (int i = 2; File.Exists(path); i++) path = Path.Combine(Inbox.Dir, Path.GetFileNameWithoutExtension(name) + " (" + i + ")" + Path.GetExtension(name));
-                    cur = Tuple.Create(new FileStream(path, FileMode.CreateNew), path);
+                    var raw = Encoding.UTF8.GetString(f, 7, n);
+                    string dir = Inbox.Dir, rel = raw; Download dl = null;
+                    int bar = raw.IndexOf('|');
+                    if (bar > 0)
+                    {
+                        lock (Downloads) Downloads.TryGetValue(raw.Substring(0, bar), out dl);
+                        rel = raw.Substring(bar + 1);
+                        if (dl != null) dir = dl.Dir;
+                    }
+                    // chemin relatif « dossier/sous-dossier/nom » : chaque morceau nettoyé, jamais de « .. »
+                    var parts = rel.Split('/', '\\').Where(x => x.Length > 0 && x != "." && x != "..").Select(Clean).ToList();
+                    if (dl == null && parts.Count > 1) parts = parts.Skip(parts.Count - 1).ToList();   // envoi spontané : nom seul
+                    if (parts.Count == 0) parts.Add("fichier");
+                    var folder = Path.Combine(new[] { dir }.Concat(parts.Take(parts.Count - 1)).ToArray());
+                    Directory.CreateDirectory(folder);
+                    var name = parts[parts.Count - 1];
+                    var path = Path.Combine(folder, name);
+                    for (int i = 2; File.Exists(path); i++) path = Path.Combine(folder, Path.GetFileNameWithoutExtension(name) + " (" + i + ")" + Path.GetExtension(name));
+                    cur = new Incoming { Fs = new FileStream(path, FileMode.CreateNew), Path = path, Dl = dl };
                     incoming[id] = cur;
                 }
                 else if (!incoming.TryGetValue(id, out cur)) return;
-                cur.Item1.Write(f, off, f.Length - off);
-                if ((flags & 2) != 0)
-                {
-                    cur.Item1.Dispose(); incoming.Remove(id);
-                    Log.Write("fichier reçu de l'iPad : " + cur.Item2);
-                    if (Received != null) Received(cur.Item2);
-                }
+                cur.Fs.Write(f, off, f.Length - off);
+                if ((flags & 2) != 0) { cur.Fs.Dispose(); incoming.Remove(id); }
+            }
+            if (cur.Dl != null && cur.Dl.Progress != null) cur.Dl.Progress(f.Length - off);
+            if ((flags & 2) != 0)
+            {
+                Log.Write("fichier reçu de l'iPad : " + cur.Path);
+                if (cur.Dl != null) { if (cur.Dl.FileDone != null) cur.Dl.FileDone(cur.Path); }
+                else if (Received != null) Received(cur.Path);
             }
         }
 
-        // Envoie un fichier à l'iPad (dans un fil à part : la vidéo continue entre les morceaux)
-        public static void Send(Session s, string path)
+        static string Clean(string name)
+        {
+            foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            return name.Length == 0 ? "_" : name;
+        }
+
+        // Envoie un fichier à l'iPad (dans un fil à part : la vidéo continue entre les morceaux).
+        // remoteDir : dossier de destination dans « bSideDesk » sur l'iPad (« / », « /Projets »…), null = réception classique
+        public static void Send(Session s, string path, string remoteDir = null, Action<long> progress = null)
         {
             uint id = (uint)Interlocked.Increment(ref nextId);
-            var name = Encoding.UTF8.GetBytes(Path.GetFileName(path));
+            var shown = Path.GetFileName(path);
+            if (remoteDir != null) shown = "@/" + (remoteDir.Trim('/').Length > 0 ? remoteDir.Trim('/') + "/" : "") + shown;
+            var name = Encoding.UTF8.GetBytes(shown);
             if (name.Length > 1000) name = name.Take(1000).ToArray();
             using (var fs = File.OpenRead(path))
             {
@@ -186,11 +214,37 @@ namespace bSideDesk
                     ms.Write(buf, 0, n);
                     var frame = ms.ToArray();
                     s.SendFrame(FrameType, frame, 0, frame.Length);
+                    if (progress != null) progress(n);
                     first = false;
                     if (last) break;
                 }
             }
-            Log.Write("fichier envoyé à l'iPad : " + path);
+            Log.Write("fichier envoyé à l'iPad : " + path + (remoteDir != null ? " → " + remoteDir : ""));
+        }
+
+        // Fichier ou dossier entier (sous-dossiers compris) vers un dossier de l'iPad
+        public static void SendTree(Session s, string path, string remoteDir, Action<long> progress)
+        {
+            if (File.Exists(path)) { Send(s, path, remoteDir, progress); return; }
+            if (!Directory.Exists(path)) return;
+            var root = Path.GetDirectoryName(path.TrimEnd('\\'));
+            foreach (var f in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                if (s.IsClosed) return;
+                var relDir = Path.GetDirectoryName(f).Substring(root.Length).Replace('\\', '/');
+                Send(s, f, remoteDir.TrimEnd('/') + "/" + relDir.Trim('/'), progress);
+            }
+        }
+
+        public static long SizeOf(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) return new FileInfo(path).Length;
+                if (Directory.Exists(path)) return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Sum(f => { try { return new FileInfo(f).Length; } catch { return 0L; } });
+            }
+            catch { }
+            return 0;
         }
     }
 

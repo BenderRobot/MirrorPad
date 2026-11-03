@@ -174,7 +174,7 @@ namespace bSideDesk
             m.Items.AddRange(new ToolStripItem[] {
                 statusItem, versionItem, new ToolStripSeparator(), toggleItem,
                 new ToolStripMenuItem("Voir les caméras de l'iPad…", null, (s, e) => ShowCameras()),
-                new ToolStripMenuItem("Envoyer un fichier vers l'iPad…", null, (s, e) => PickFilesToSend()),
+                new ToolStripMenuItem("Fichiers PC ⇄ iPad…", null, (s, e) => ShowFiles()),
                 new ToolStripMenuItem("Repérer les écrans…", null, (s, e) => FindScreens()),
                 new ToolStripMenuItem("Installer les composants manquants…", null, (s, e) => InstallDrivers()),
                 new ToolStripMenuItem("Paramètres…", null, (s, e) => ShowSettings()),
@@ -356,10 +356,20 @@ namespace bSideDesk
         }
 
         // ---------- fichiers vers l'iPad ----------
-        void PickFilesToSend()
+        // ---------- explorateur double PC ⇄ iPad ----------
+        FileExplorer explorer;
+        void ShowFiles()
         {
-            using (var d = new OpenFileDialog { Multiselect = true, Title = "Envoyer vers l'iPad" })
-                if (d.ShowDialog() == DialogResult.OK) Outbox.Queue(d.FileNames);
+            var s = session;
+            if (s == null || s.IsClosed) { Balloon("Connectez d'abord l'iPad (app bSideDesk ouverte).", ToolTipIcon.Warning); return; }
+            if (explorer != null && !explorer.IsDisposed) { explorer.Activate(); return; }
+            explorer = new FileExplorer
+            {
+                GetSession = () => session,
+                SendLine = line => { var cs = session; if (cs != null && !cs.IsClosed) cs.Send(line); }
+            };
+            explorer.FormClosed += (o, e) => explorer = null;
+            explorer.Show();
         }
 
         // demandes déposées par le menu, « Envoyer vers » ou une 2e instance : envoyées dès que l'iPad est connecté
@@ -597,6 +607,7 @@ namespace bSideDesk
 
         void HandleMedia(string[] p)
         {
+            if (p[0] == "FS") { var fx = explorer; if (fx != null) fx.OnLine(p); return; }
             if (p[0] == "WIN") { Post(SwapWindow); return; }
             if (p[0] == "DB")
             {

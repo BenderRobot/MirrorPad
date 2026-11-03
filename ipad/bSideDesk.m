@@ -1890,7 +1890,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  MPSpeaker *_speaker;         // son du PC
  MPTouchBar *_bar;            // Touch Bar contextuelle
  CGFloat _zoom;CGPoint _zoomAt;UILabel *_zoomBadge;   // loupe (2 doigts maintenus)
- NSMutableDictionary<NSNumber*,NSFileHandle*> *_rxFiles;NSMutableDictionary<NSNumber*,NSString*> *_rxPaths;   // fichiers reçus du PC
+ NSMutableDictionary<NSNumber*,NSFileHandle*> *_rxFiles;NSMutableDictionary<NSNumber*,NSString*> *_rxPaths;NSMutableDictionary *_rxQuiet;   // fichiers reçus du PC
  MPDashboardView *_dash;      // tableau de bord
  BOOL _remoteCam;             // caméra ouverte à la demande du PC (fenêtre « Caméras de l'iPad »)
  BOOL _soundOn;               // son demandé au PC pour cette connexion
@@ -2042,6 +2042,8 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   [self showNotice:@"bSideDesk" text:[p[1] stringByRemovingPercentEncoding]?:@"" code:nil ok:NO];
  } else if([k isEqualToString:@"CAMREQ"]&&p.count>=2){
   [self remoteCamera:p];
+ } else if([k isEqualToString:@"FS"]&&p.count>=2){
+  [self fsCommand:p];
  } else if([k isEqualToString:@"DB"]||[k isEqualToString:@"DBX"]){
   [_dash update:p];
  } else if([k isEqualToString:@"TB"]&&p.count>=2){
@@ -2208,13 +2210,16 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
 - (void)fileChunk:(NSData*)d {
  if(d.length<5)return;
  const uint8_t *b=d.bytes;uint32_t fid;memcpy(&fid,b,4);uint8_t flags=b[4];size_t off=5;
- if(!_rxFiles){_rxFiles=[NSMutableDictionary dictionary];_rxPaths=[NSMutableDictionary dictionary];}
+ if(!_rxFiles){_rxFiles=[NSMutableDictionary dictionary];_rxPaths=[NSMutableDictionary dictionary];_rxQuiet=[NSMutableDictionary dictionary];}
  NSNumber *key=@(fid);
  if(flags&1){
   if(d.length<7)return;
   size_t n=(size_t)b[5]<<8|b[6];off=7+n;if(d.length<off)return;
-  NSString *name=[[[NSString alloc] initWithBytes:b+7 length:n encoding:NSUTF8StringEncoding] lastPathComponent]?:@"fichier";
-  NSString *dir=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bSideDesk"];
+  NSString *raw=[[NSString alloc] initWithBytes:b+7 length:n encoding:NSUTF8StringEncoding]?:@"fichier";
+  BOOL quiet=[raw hasPrefix:@"@/"];   // envoyé depuis l'explorateur du PC : rangé dans le dossier choisi, sans fenêtre
+  NSString *name=raw.lastPathComponent.length?raw.lastPathComponent:@"fichier";
+  NSString *dir=quiet?[self fsPath:[[raw substringFromIndex:2] stringByDeletingLastPathComponent]]:[self fsRoot];
+  if(quiet)_rxQuiet[key]=@YES;
   [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSString *path=[dir stringByAppendingPathComponent:name];
   for(int i=2;[NSFileManager.defaultManager fileExistsAtPath:path];i++)
@@ -2222,12 +2227,13 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
   [NSFileManager.defaultManager createFileAtPath:path contents:nil attributes:nil];
   NSFileHandle *h=[NSFileHandle fileHandleForWritingAtPath:path];if(!h)return;
   _rxFiles[key]=h;_rxPaths[key]=path;
-  [self showNotice:@"Réception" text:[NSString stringWithFormat:@"%@…",name] code:nil ok:YES];
+  if(!quiet)[self showNotice:@"Réception" text:[NSString stringWithFormat:@"%@…",name] code:nil ok:YES];
  }
  NSFileHandle *h=_rxFiles[key];if(!h)return;
  [h writeData:[d subdataWithRange:NSMakeRange(off,d.length-off)]];
  if(flags&2){
   [h closeFile];NSString *path=_rxPaths[key];[_rxFiles removeObjectForKey:key];[_rxPaths removeObjectForKey:key];
+  if(_rxQuiet[key]){[_rxQuiet removeObjectForKey:key];[_input send:[NSString stringWithFormat:@"FS DONE %@\n",MPEsc([self fsRel:path])]];return;}
   [self fileReceived:path];
  }
 }
@@ -2249,6 +2255,98 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [self presentViewController:a animated:YES completion:nil];
 }
 
+#pragma mark Explorateur de fichiers du PC (« Fichiers de l'iPad ») : dossier Documents/bSideDesk de l'iPad
+// Lignes du PC : « FS LIST id dossier », « FS MKDIR dossier », « FS DEL chemin », « FS REN chemin nouveauNom »,
+// « FS GET jeton chemin » (fichier ou dossier envoyé au PC en trames 8, nommées « jeton|chemin relatif »).
+// Réponses : « FS ITEMS id dossier nom|d|taille|date … », « FS OK », « FS ERR texte », « FS DONE chemin » (fichier reçu).
+- (NSString*)fsRoot {
+ NSString *r=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/bSideDesk"];
+ [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
+ return r;
+}
+// chemin relatif (« / » = racine) -> chemin réel, sans jamais sortir du dossier bSideDesk
+- (NSString*)fsPath:(NSString*)rel {
+ NSString *p=[self fsRoot];
+ for(NSString *c in [rel?:@"" componentsSeparatedByString:@"/"]){
+  if(!c.length||[c isEqualToString:@"."]||[c isEqualToString:@".."])continue;
+  p=[p stringByAppendingPathComponent:c];
+ }
+ return p;
+}
+- (NSString*)fsRel:(NSString*)path {
+ NSString *root=[self fsRoot];
+ return [path hasPrefix:root]?([path substringFromIndex:root.length].length?[path substringFromIndex:root.length]:@"/"):@"/";
+}
+- (void)fsCommand:(NSArray<NSString*>*)p {
+ NSString *op=p[1];NSFileManager *fm=NSFileManager.defaultManager;
+ NSString *(^arg)(NSUInteger)=^NSString*(NSUInteger i){return p.count>i?([p[i] stringByRemovingPercentEncoding]?:@""):@"";};
+ MPSecureServer *input=_input;
+ if([op isEqualToString:@"LIST"]){
+  NSString *rel=arg(3),*dir=[self fsPath:rel];
+  NSMutableString *out=[NSMutableString stringWithFormat:@"FS ITEMS %@ %@",p.count>2?p[2]:@"0",MPEsc([self fsRel:dir])];
+  NSArray *names=[[fm contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+  int count=0;
+  for(NSString *n in names){
+   if([n hasPrefix:@"."])continue;
+   if(++count>3000)break;
+   NSDictionary *a=[fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:n] error:nil];
+   BOOL isDir=[a.fileType isEqualToString:NSFileTypeDirectory];
+   [out appendFormat:@" %@",MPEsc([NSString stringWithFormat:@"%@|%@|%llu|%.0f",n,isDir?@"d":@"f",isDir?0ULL:a.fileSize,a.fileModificationDate.timeIntervalSince1970])];
+  }
+  [input send:[out stringByAppendingString:@"\n"]];
+ } else if([op isEqualToString:@"MKDIR"]){
+  NSError *e=nil;[fm createDirectoryAtPath:[self fsPath:arg(2)] withIntermediateDirectories:YES attributes:nil error:&e];
+  [input send:e?[NSString stringWithFormat:@"FS ERR %@\n",MPEsc(e.localizedDescription)]:@"FS OK\n"];
+ } else if([op isEqualToString:@"DEL"]){
+  NSString *path=[self fsPath:arg(2)];NSError *e=nil;
+  if([path isEqualToString:[self fsRoot]])return;
+  [fm removeItemAtPath:path error:&e];
+  [input send:e?[NSString stringWithFormat:@"FS ERR %@\n",MPEsc(e.localizedDescription)]:@"FS OK\n"];
+ } else if([op isEqualToString:@"REN"]){
+  NSString *path=[self fsPath:arg(2)],*nn=arg(3).lastPathComponent;NSError *e=nil;
+  if(!nn.length||[nn isEqualToString:@".."]||[path isEqualToString:[self fsRoot]])return;
+  [fm moveItemAtPath:path toPath:[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:nn] error:&e];
+  [input send:e?[NSString stringWithFormat:@"FS ERR %@\n",MPEsc(e.localizedDescription)]:@"FS OK\n"];
+ } else if([op isEqualToString:@"GET"]&&p.count>=4){
+  NSString *token=p[2],*path=[self fsPath:arg(3)];
+  BOOL isDir=NO;if(![fm fileExistsAtPath:path isDirectory:&isDir]){[input send:@"FS ERR Introuvable\n"];return;}
+  NSString *base=path.stringByDeletingLastPathComponent;
+  NSMutableArray<NSString*> *files=[NSMutableArray array];
+  if(isDir){
+   NSDirectoryEnumerator *en=[fm enumeratorAtPath:path];NSString *f;
+   while((f=[en nextObject])){BOOL d=NO;NSString *full=[path stringByAppendingPathComponent:f];if([fm fileExistsAtPath:full isDirectory:&d]&&!d&&![f.lastPathComponent hasPrefix:@"."])[files addObject:full];}
+  } else [files addObject:path];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+   for(NSString *f in files){
+    NSString *relName=[f substringFromIndex:base.length+1];
+    if(![MPViewController sendFile:[NSURL fileURLWithPath:f] as:[NSString stringWithFormat:@"%@|%@",token,relName] over:input])break;
+   }
+  });
+ }
+}
+// Envoi d'un fichier au PC en trames 8 de 256 Ko (sans saturer la file d'envoi) ; NO si la connexion tombe
++ (BOOL)sendFile:(NSURL*)u as:(NSString*)nameStr over:(MPSecureServer*)input {
+ NSInputStream *in=[NSInputStream inputStreamWithURL:u];[in open];
+ uint32_t fid=arc4random();NSData *name=[nameStr dataUsingEncoding:NSUTF8StringEncoding];
+ if(name.length>1000)name=[name subdataWithRange:NSMakeRange(0,1000)];
+ uint8_t *buf=malloc(256*1024);BOOL first=YES,ok=YES;
+ NSNumber *size=nil;[u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+ unsigned long long total=size.unsignedLongLongValue,done=0;
+ while(ok){
+  while(input.pending>12&&input.connected)usleep(20000);   // on laisse partir les morceaux précédents
+  if(!input.connected){ok=NO;break;}
+  NSInteger n=[in read:buf maxLength:256*1024];if(n<0){ok=NO;break;}
+  done+=(unsigned long long)n;BOOL last=n==0||done>=total;
+  NSMutableData *f=[NSMutableData dataWithBytes:&fid length:4];uint8_t fl=(first?1:0)|(last?2:0);[f appendBytes:&fl length:1];
+  if(first){uint8_t l[2]={(uint8_t)(name.length>>8),(uint8_t)name.length};[f appendBytes:l length:2];[f appendData:name];}
+  [f appendBytes:buf length:(NSUInteger)n];
+  [input sendBinary:8 data:f];first=NO;
+  if(last)break;
+ }
+ free(buf);[in close];
+ return ok;
+}
+
 #pragma mark Fichiers envoyés au PC (app Fichiers de l'iPad)
 - (void)pickFile {
  if(!_input.connected){[self showNotice:@"Fichiers" text:@"Connectez d'abord le PC." code:nil ok:NO];return;}
@@ -2262,26 +2360,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  [self showNotice:@"Fichiers" text:[NSString stringWithFormat:@"Envoi de %lu fichier(s) au PC…",(unsigned long)urls.count] code:nil ok:YES];
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
   unsigned long sent=0;
-  for(NSURL *u in urls){
-   NSInputStream *in=[NSInputStream inputStreamWithURL:u];[in open];
-   uint32_t fid=arc4random();NSData *name=[u.lastPathComponent dataUsingEncoding:NSUTF8StringEncoding];
-   if(name.length>1000)name=[name subdataWithRange:NSMakeRange(0,1000)];
-   uint8_t *buf=malloc(256*1024);BOOL first=YES,ok=YES;
-   NSNumber *size=nil;[u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
-   unsigned long long total=size.unsignedLongLongValue,done=0;
-   while(ok){
-    while(input.pending>12&&input.connected)usleep(20000);   // on laisse partir les morceaux précédents
-    if(!input.connected){ok=NO;break;}
-    NSInteger n=[in read:buf maxLength:256*1024];if(n<0){ok=NO;break;}
-    done+=(unsigned long long)n;BOOL last=n==0||done>=total;
-    NSMutableData *f=[NSMutableData dataWithBytes:&fid length:4];uint8_t fl=(first?1:0)|(last?2:0);[f appendBytes:&fl length:1];
-    if(first){uint8_t l[2]={(uint8_t)(name.length>>8),(uint8_t)name.length};[f appendBytes:l length:2];[f appendData:name];}
-    [f appendBytes:buf length:(NSUInteger)n];
-    [input sendBinary:8 data:f];first=NO;
-    if(last)break;
-   }
-   free(buf);[in close];if(ok)sent++;
-  }
+  for(NSURL *u in urls)if([MPViewController sendFile:u as:u.lastPathComponent over:input])sent++;
   dispatch_async(dispatch_get_main_queue(),^{[w showNotice:@"Fichiers" text:[NSString stringWithFormat:@"%lu fichier(s) envoyé(s) dans Téléchargements > bSideDesk sur le PC.",sent] code:nil ok:sent==urls.count];});
  });
 }
