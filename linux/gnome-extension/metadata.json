@@ -1,0 +1,8 @@
+{
+  "uuid": "bsidedesk@bsidedesk.fr",
+  "name": "bSideDesk",
+  "description": "Recale les fenêtres plein écran (vidéos) quand l'écran de l'iPad tourne.",
+  "shell-version": ["42", "43", "44"],
+  "url": "https://github.com/BenderRobot/bsidedesk",
+  "version": 1
+}

@@ -1120,6 +1120,10 @@ class App:
             self.cfg['refit_fullscreen'] = False
             save_config(self.cfg)
             os.remove(App.REFIT_MARK)
+        if self.cfg.get('cfg_rev', 0) < 2:   # ancienne version : un recalage raté avait coupé le redimensionnement sur place
+            self.cfg.update(resize_inplace=True, cfg_rev=2)
+            self.cfg.pop('refit_fullscreen', None)
+            save_config(self.cfg)
         self.indicator = None
         self.status_item = None
         log(f'bSideDesk {version()} démarré ({os.environ.get("XDG_SESSION_TYPE", "?")}, {os.environ.get("XDG_CURRENT_DESKTOP", "?")})')
@@ -1155,6 +1159,7 @@ class App:
             it.connect('activate', cb)
             menu.append(it)
         menu.show_all()
+        self.enable_shell_extension()
         if AppIndicator:
             run('gnome-extensions', 'enable', 'appindicatorsupport@rgcjonas.gmail.com')   # icônes dans la barre de GNOME
             self.indicator = AppIndicator.Indicator.new('bsidedesk', ICON if os.path.exists(ICON) else 'video-display',
@@ -1328,13 +1333,28 @@ class App:
             else:
                 log(f"disposition des écrans impossible : {getattr(e, 'message', e)}")
             return
-        if inplace and self.cfg.get('refit_fullscreen', True):
-            try:   # à part : un échec ici ne doit pas faire abandonner le redimensionnement sur place
-                self.refit_fullscreen(only, scale, size)
-            except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
-                log(f"recalage des fenêtres plein écran impossible : {getattr(e, 'message', e)}")
 
     REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
+    EXT_UUID = 'bsidedesk@bsidedesk.fr'
+
+    def enable_shell_extension(self):
+        """Extension GNOME du paquet (recalage du plein écran après rotation) : ajoutée aux extensions actives.
+        GNOME ne découvre une extension nouvellement installée qu'à l'ouverture de session : un redémarrage suffit."""
+        try:
+            st = Gio.Settings.new('org.gnome.shell')
+            if st.get_boolean('disable-user-extensions'):
+                st.set_boolean('disable-user-extensions', False)
+            on = list(st.get_strv('enabled-extensions'))
+            if self.EXT_UUID not in on:
+                st.set_strv('enabled-extensions', on + [self.EXT_UUID])
+                Gio.Settings.sync()
+            info = subprocess.run(['gnome-extensions', 'info', self.EXT_UUID], capture_output=True, text=True, timeout=5).stdout
+            if 'State: ENABLED' in info or 'State: ACTIVE' in info:
+                log('extension GNOME bSideDesk active (recalage du plein écran après rotation)')
+            else:
+                log('extension GNOME bSideDesk installée : elle sera active après un redémarrage (ou fermeture de session)')
+        except Exception as e:  # noqa: BLE001
+            log(f'extension GNOME bSideDesk impossible à activer : {e}')
 
     def refit_fullscreen(self, only, scale, size):
         """Après une rotation : GNOME 43 ne recale pas les fenêtres plein écran (vidéo) sur l'écran redimensionné.
