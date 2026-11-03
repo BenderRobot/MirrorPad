@@ -1298,9 +1298,15 @@ class App:
             self.streamer.restart()
 
     def apply_layout(self):
-        size = self.size
+        size, inplace = self.size, self.resizing_inplace
+        only, scale = self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto'))
         try:
-            log("écran de l'iPad : " + self.screen.layout(self.cfg.get('ipad_only', True), str(self.cfg.get('scale', 'auto')), size))
+            if inplace:
+                # écran redimensionné sur place : GNOME 43 ne réajuste pas les fenêtres en plein écran (vidéo YouTube…)
+                # à la nouvelle taille ; un aller-retour d'échelle les oblige à se recaler sur l'écran
+                self.screen.layout(only, '1' if scale != '1' else '2', size)
+                time.sleep(0.4)
+            log("écran de l'iPad : " + self.screen.layout(only, scale, size))
         except (GLib.Error, RuntimeError, IndexError, TypeError) as e:
             if self.resizing_inplace and size == self.size:
                 self.inplace_failed("GNOME n'a pas changé la taille de l'écran")
