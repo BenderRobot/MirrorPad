@@ -39,7 +39,7 @@ class BSideDeskExtension {
     _schedule() {
         this._timers.forEach(id => GLib.source_remove(id));
         this._timers = [];
-        [[150, 1], [600, 2], [1500, 2], [3000, 2]].forEach(([ms, step]) => {
+        [[150, 1], [600, 2], [1500, 2], [3000, 2], [5000, 2], [5200, 9]].forEach(([ms, step]) => {
             const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
                 this._timers = this._timers.filter(t => t !== id);
                 this._refit(step);
@@ -72,9 +72,25 @@ class BSideDeskExtension {
         return { background, container };
     }
 
+    // ce que GNOME affiche réellement : pour chaque élément, mise en page, correction et position à l'écran
+    _tree(a, depth, out) {
+        if (depth > 4)
+            return;
+        for (const c of a.get_children()) {
+            const [x, y] = c.get_position();
+            const [w, h] = c.get_size();
+            const [sx, sy] = c.get_transformed_position();
+            const [sw, sh] = c.get_transformed_size();
+            out.push(`${depth}:${typeName(c) || 'acteur'} ${Math.round(w)}x${Math.round(h)}+${Math.round(x)}+${Math.round(y)}` +
+                ` t${Math.round(c.translation_x)},${Math.round(c.translation_y)} éch${c.scale_x}` +
+                ` écran ${Math.round(sw)}x${Math.round(sh)}+${Math.round(sx)}+${Math.round(sy)}${c.visible ? '' : ' (caché)'}`);
+            this._tree(c, depth + 1, out);
+        }
+    }
+
     // step 1 : demander à GNOME de refaire la mise en page ; 2 : compenser à l'affichage ce qui reste décalé.
-    // La compensation est calculée sur la position RÉELLEMENT affichée (correction déjà appliquée comprise) :
-    // elle se rattrape d'elle-même si GNOME bouge encore le contenu, et ne décale jamais dans l'autre sens.
+    // La compensation tient compte de celle déjà appliquée : elle suit GNOME s'il bouge encore le contenu.
+    // Passe 9 : contrôle, tout ce qui est affiché dans la fenêtre est écrit dans le journal.
     _refit(step) {
         for (const actor of global.get_window_actors()) {
             const win = actor.meta_window;
@@ -98,12 +114,15 @@ class BSideDeskExtension {
                     }
                     continue;
                 }
-                // position affichée du contenu par rapport au fond noir, en unités du contenu (×2 compris)
-                const [bx, by] = background.get_transformed_position();
-                const [px, py] = container.get_transformed_position();
-                const [pw] = container.get_transformed_size();
-                const k = pw > 0 ? cw / pw : 1;
-                const dx = (px - bx) * k, dy = (py - by) * k;
+                const [bx, by] = background.get_position();
+                const dx = cx + tx - bx, dy = cy + ty - by;   // décalage affiché, en unités de la fenêtre
+                if (step === 9) {
+                    const tree = [];
+                    this._tree(actor, 0, tree);
+                    log(`bSideDesk: contrôle « ${win.get_title()} » fenêtre ${actor.get_transformed_size().map(Math.round).join('x')} ` +
+                        `+${actor.get_transformed_position().map(Math.round).join('+')} : ${tree.join(' | ')}`);
+                    continue;
+                }
                 if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5)
                     continue;
                 if (step === 1 && !tx && !ty) {
