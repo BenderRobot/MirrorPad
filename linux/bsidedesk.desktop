@@ -1,6 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=bSideDesk
-Comment=iPad en écran supplémentaire
-Exec=sh -c 'd="$HOME/bSideDesk"; [ -d "$d" ] || d="$HOME/MirrorPad"; mkdir -p "$HOME/.config/bsidedesk"; python3 "$d/linux/bsidedesk-sender.py" >> "$HOME/.config/bsidedesk/sender.log" 2>&1'
+Comment=L'iPad comme écran supplémentaire tactile
+Exec=/usr/bin/bsidedesk
+Icon=bsidedesk
+Categories=Utility;
+StartupNotify=false
 X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

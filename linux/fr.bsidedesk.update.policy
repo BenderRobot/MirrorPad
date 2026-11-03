@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Mise à jour automatique de bSideDesk : l'utilisateur de la session ouverte peut installer la dernière
+     release officielle sans mot de passe (l'outil ne prend aucun argument, il ne peut rien installer d'autre). -->
+<policyconfig>
+  <vendor>bSideDesk</vendor>
+  <action id="fr.bsidedesk.update">
+    <description>Mettre à jour bSideDesk</description>
+    <message>bSideDesk installe sa nouvelle version</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/bsidedesk/bsidedesk-update</annotate>
+  </action>
+</policyconfig>

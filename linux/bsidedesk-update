@@ -1,0 +1,42 @@
+#!/usr/bin/python3 -I
+"""Outil système de bSideDesk (lancé par pkexec, sans mot de passe pour l'utilisateur de la session active) :
+télécharge le dernier paquet publié sur GitHub (BenderRobot/bsidedesk) et l'installe s'il est plus récent.
+Il ne prend aucun argument : il n'installe jamais autre chose que la release officielle."""
+import json, os, subprocess, sys, urllib.request
+
+REPO = 'BenderRobot/bsidedesk'
+CACHE = '/var/cache/bsidedesk'
+
+
+def main():
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/releases/latest', headers={'User-Agent': 'bSideDesk-update'})
+    rel = json.load(urllib.request.urlopen(req, timeout=30))
+    asset = next((a for a in rel.get('assets', []) if a['name'].startswith('bsidedesk_') and a['name'].endswith('_all.deb')), None)
+    if not asset:
+        print('aucun paquet Linux dans la dernière release')
+        return 3
+    remote = rel['tag_name'].lstrip('v')
+    cur = subprocess.run(['dpkg-query', '-W', '-f=${Version}', 'bsidedesk'], capture_output=True, text=True).stdout.strip()
+    if cur and subprocess.run(['dpkg', '--compare-versions', remote, 'le', cur]).returncode == 0:
+        print(f'déjà à jour ({cur})')
+        return 2
+    os.makedirs(CACHE, exist_ok=True)
+    path = os.path.join(CACHE, os.path.basename(asset['name']))
+    with urllib.request.urlopen(urllib.request.Request(asset['browser_download_url'], headers={'User-Agent': 'bSideDesk-update'}), timeout=120) as r, open(path, 'wb') as f:
+        f.write(r.read())
+    if subprocess.run(['dpkg-deb', '-f', path, 'Package'], capture_output=True, text=True).stdout.strip() != 'bsidedesk':
+        print('paquet inattendu')
+        return 4
+    env = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
+    r = subprocess.run(['apt-get', 'install', '-y', '-q', path], env=env)
+    for old in os.listdir(CACHE):
+        if old != os.path.basename(path):
+            try:
+                os.remove(os.path.join(CACHE, old))
+            except OSError:
+                pass
+    return r.returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main())

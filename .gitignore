@@ -11,3 +11,4 @@ windows/installer/akv/
 windows/installer/akvcam.nsh
 bSideDesk-Setup.exe
 windows/installer/bSideDeskInstall.exe
+linux/build/

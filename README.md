@@ -1,7 +1,7 @@
 # bSideDesk
 
 **L'iPad devient le « bureau d'à côté » du PC** : second écran tactile, stylet, clavier, Touch Bar contextuelle,
-webcam, micro, haut-parleur, transfert de fichiers et tableau de bord. Windows 10/11 (et Debian X11), iPad sous iOS 12 jailbreaké.
+webcam, micro, haut-parleur, transfert de fichiers et tableau de bord. Windows 10/11 et Debian 12 (GNOME Wayland), iPad sous iOS 12 jailbreaké.
 
 ```
 Windows : écran virtuel (Virtual Display Driver) → ffmpeg ddagrab → H.264/FLV ─┐
@@ -22,7 +22,7 @@ iPad    : gestes, stylet, clavier, webcam, micro, presse-papiers, fichiers ─�
 | `windows/installer/` | `bSideDesk.nsi` (installateur NSIS), `release.yml` (copie du workflow), `LISEZMOI.md` |
 | `windows/drivers/vdd/` | Virtual Display Driver 24.10.27 (MIT) + définitions iPad paysage / portrait |
 | `windows/tests/` | `Test-Tactile.ps1` : diagnostic de l'injection tactile Windows |
-| `linux/` | Envoyeur Python pour Debian / X11 |
+| `linux/` | App GNOME Wayland (`bsidedesk.py`), outil de mise à jour, règle polkit, `build-deb.sh` (paquet .deb) |
 | `srvhome/` | Ligne cron de rattrapage si l'iPad était éteint lors d'une release |
 | `.github/workflows/release.yml` | Chaîne de publication |
 
@@ -135,16 +135,24 @@ Lignes PC → iPad : `N nom`, `C fps mbps encodeur`, `V NEW` / `V END`, `Q satur
 `FS LIST id dossier`, `FS MKDIR dossier`, `FS DEL chemin`, `FS REN chemin nom`, `FS GET jeton chemin` (dossier « Fichiers > Sur mon iPad > bSideDesk » de l'iPad ;
 fichiers PC → iPad nommés `@/dossier/nom`, iPad → PC nommés `jeton|chemin`).
 
-## Linux (Debian, session X11)
+## Linux (Debian 12, GNOME Wayland)
+
+Paquet `bsidedesk_<version>_all.deb` publié dans chaque release (construit par `linux/build-deb.sh`).
 
 ```bash
-sudo apt install ffmpeg xdotool x11-xserver-utils
-python3 linux/bsidedesk-sender.py            # iPad détecté automatiquement
-cp linux/bsidedesk.desktop ~/.config/autostart/   # lancement à l'ouverture de session
+sudo apt install ./bsidedesk_*_all.deb    # dépendances (GStreamer, PipeWire, icône GNOME…) installées avec
 ```
-Crée un moniteur virtuel 2048×1536 à droite des écrans (`xrandr --setmonitor`), encodage VA-API si disponible, sinon x264.
-Réglages : `~/.config/bsidedesk/config.json`. Wayland non pris en charge. Les fonctions récentes (Touch Bar, son, fichiers,
-tableau de bord, USB) sont pour l'instant propres à Windows.
+
+- **Écran virtuel de GNOME** (Mutter `RemoteDesktop` + `ScreenCast.RecordVirtual`) : un vrai écran de plus, à la taille demandée
+  par l'iPad (`RES`), recréé à chaque rotation ou pliage de la Touch Bar, retiré quand l'iPad se verrouille.
+- **Image** : PipeWire → GStreamer → H.264 (Intel VA-API, sinon x264) → FLV.
+- **Gestes** : multi-touch natif de GNOME (gestes à 3 et 4 doigts), souris, molette fine, zoom, clavier (keysyms, accents compris).
+- **Icône** dans la barre du haut (extension AppIndicator, activée par l'app) : état, connexion, paramètres, journal, mise à jour.
+- **Appairage** : fenêtre sur le bureau, ou `bsidedesk --pair` dans un terminal (SSH) quand personne ne voit l'écran.
+- **Mises à jour** automatiques (toutes les 30 min) : `/usr/lib/bsidedesk/bsidedesk-update` lancé par `pkexec`
+  (règle polkit `fr.bsidedesk.update` : sans mot de passe pour la session active, ne peut installer que la release officielle).
+- Démarrage automatique à l'ouverture de la session GNOME (`/etc/xdg/autostart`). Réglages et journal : `~/.config/bsidedesk/`.
+- L'iPad n'accepte qu'un PC à la fois : déconnectez l'autre PC (menu « Déconnecter ») pour passer de l'un à l'autre.
 
 ## Limites connues
 

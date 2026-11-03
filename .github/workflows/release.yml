@@ -1,5 +1,5 @@
 # À chaque push sur main : compile l'app iPad sur SRVHOME, l'installe aussitôt sur l'iPad,
-# emballe l'app Windows et publie une release GitHub (que l'app Windows récupère toute seule).
+# emballe l'app Windows et le paquet Debian, et publie une release GitHub (récupérée toute seule par les PC).
 name: Release bSideDesk
 
 on:
@@ -88,9 +88,21 @@ jobs:
             bSideDesk-Windows.zip
             bSideDesk-Setup.exe
 
+  linux:
+    name: Debian (paquet .deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construire bsidedesk_${{ env.VERSION }}_all.deb
+        run: sh linux/build-deb.sh "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: linux/build/*.deb
+
   release:
     name: Publier
-    needs: [ipad, windows]
+    needs: [ipad, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
