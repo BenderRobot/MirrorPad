@@ -1055,16 +1055,23 @@ static NSArray<NSArray<NSString*>*> *MPFeatures(void){
  UIControl *t=[UIControl new];t.translatesAutoresizingMaskIntoConstraints=NO;t.tag=(NSInteger)i;
  t.backgroundColor=[UIColor colorWithWhite:1 alpha:.12];t.layer.cornerRadius=18;
  t.layer.borderWidth=1;t.layer.borderColor=[UIColor colorWithWhite:1 alpha:.24].CGColor;
- UILabel *icon=MPLabel(f[0],26,UIFontWeightRegular,1,0);
+ UILabel *icon=MPLabel(f[0],24,UIFontWeightRegular,1,0);
+ [icon setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
  UILabel *name=MPLabel(f[1],15,UIFontWeightSemibold,1,.2);
+ name.adjustsFontSizeToFitWidth=YES;name.minimumScaleFactor=.75;name.numberOfLines=1;
  UILabel *desc=MPLabel(f[2],12,UIFontWeightRegular,.75,0);desc.numberOfLines=2;
+ desc.lineBreakMode=NSLineBreakByWordWrapping;
+ for(UILabel *l in @[name,desc]){   // le texte rétrécit et passe à la ligne au lieu de déborder de la tuile
+  [l setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+  [l setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+ }
  UIStackView *txt=[[UIStackView alloc] initWithArrangedSubviews:@[name,desc]];txt.axis=UILayoutConstraintAxisVertical;txt.spacing=2;
  UIStackView *row=[[UIStackView alloc] initWithArrangedSubviews:@[icon,txt]];row.spacing=10;row.alignment=UIStackViewAlignmentCenter;
  row.translatesAutoresizingMaskIntoConstraints=NO;row.userInteractionEnabled=NO;
  [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
  [t addSubview:row];
- [NSLayoutConstraint activateConstraints:@[[t.heightAnchor constraintEqualToConstant:62],
-  [row.leadingAnchor constraintEqualToAnchor:t.leadingAnchor constant:14],[row.trailingAnchor constraintLessThanOrEqualToAnchor:t.trailingAnchor constant:-10],
+ [NSLayoutConstraint activateConstraints:@[[t.heightAnchor constraintEqualToConstant:66],
+  [row.leadingAnchor constraintEqualToAnchor:t.leadingAnchor constant:12],[row.trailingAnchor constraintEqualToAnchor:t.trailingAnchor constant:-10],
   [row.centerYAnchor constraintEqualToAnchor:t.centerYAnchor]]];
  [t addTarget:self action:@selector(tileTapped:) forControlEvents:UIControlEventTouchUpInside];
  [t addTarget:self action:@selector(tileDown:) forControlEvents:UIControlEventTouchDown];

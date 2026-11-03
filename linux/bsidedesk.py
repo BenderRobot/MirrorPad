@@ -23,6 +23,12 @@ try:
 except (ValueError, ImportError):
     AppIndicator = None
 
+try:
+    gi.require_version('Atspi', '2.0')
+    from gi.repository import Atspi  # noqa: E402  accessibilité : zone de saisie active (clavier auto)
+except (ValueError, ImportError):
+    Atspi = None
+
 VERSION_FILE = '/usr/lib/bsidedesk/version.txt'
 PORT = 7272
 REPO = 'BenderRobot/bsidedesk'
@@ -596,6 +602,8 @@ class Input:
                 self.screen.notify('NotifyTouchMotion', '(sudd)', stream, slot, x, y)
             else:
                 self.screen.notify('NotifyTouchUp', '(u)', slot)
+                if st == 'u':
+                    self.app.focus.tapped(f[1], f[2])
 
     def release(self):
         if self.left:
@@ -612,6 +620,7 @@ class Input:
                     self.button(BTN_LEFT, True); self.left = True
                 elif k == 'U':
                     self.release()
+                    self.app.focus.tapped(p[1], p[2])
                 elif k == 'R':
                     self.button(BTN_RIGHT, True); self.button(BTN_RIGHT, False)
             elif k == 'F':
@@ -651,6 +660,92 @@ class Input:
                 self.app.command(p)
         except (ValueError, IndexError):
             pass
+
+
+# ======================================================================================
+# Clavier auto : quand on touche une zone de saisie, le clavier de l'iPad s'ouvre (accessibilité AT-SPI de GNOME)
+# ======================================================================================
+class FocusWatcher:
+    NOT_TEXT = ()
+
+    def __init__(self, app):
+        self.app, self.tap, self.shown, self.last_editable, self.listener = app, (0.5, 0.5, 0.0), False, False, None
+
+    def start(self):
+        if not Atspi:
+            log('clavier auto indisponible (paquet gir1.2-atspi-2.0 manquant)')
+            return
+        try:
+            Atspi.init()
+            self.enable_accessibility()
+            FocusWatcher.NOT_TEXT = (Atspi.Role.DOCUMENT_WEB, Atspi.Role.DOCUMENT_FRAME, Atspi.Role.FRAME,
+                                     Atspi.Role.WINDOW, Atspi.Role.APPLICATION, Atspi.Role.PUSH_BUTTON)
+            self.listener = Atspi.EventListener.new(lambda ev, *a: self.on_event(ev))
+            self.listener.register('object:state-changed:focused')
+        except Exception as e:  # noqa: BLE001
+            log(f'clavier auto indisponible : {e}')
+
+    @staticmethod
+    def enable_accessibility():
+        """Les applis (Firefox, Chromium, Qt…) n'exposent leurs zones de saisie que si l'accessibilité est active."""
+        try:
+            st = Gio.Settings.new('org.gnome.desktop.interface')
+            if not st.get_boolean('toolkit-accessibility'):
+                st.set_boolean('toolkit-accessibility', True)
+                log("accessibilité activée (clavier auto) : les applis déjà ouvertes en profitent après redémarrage")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            Gio.bus_get_sync(Gio.BusType.SESSION, None).call_sync(
+                'org.a11y.Bus', '/org/a11y/bus', 'org.freedesktop.DBus.Properties', 'Set',
+                GLib.Variant('(ssv)', ('org.a11y.Status', 'IsEnabled', GLib.Variant('b', True))), None, Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            pass
+
+    def tapped(self, nx, ny):
+        """Appui sur l'iPad (fil de lecture) : le clavier ne s'ouvre que juste après un appui de l'utilisateur."""
+        self.tap = (float(nx), float(ny), time.time())
+        GLib.timeout_add(350, self.after_tap)
+
+    def after_tap(self):
+        # appui sur un champ déjà actif : pas de nouvel évènement de focus, on se fie au dernier focus connu
+        if self.last_editable and not self.shown and time.time() - self.tap[2] < 1.2:
+            self.show()
+        return False
+
+    def editable(self, acc):
+        try:
+            st = acc.get_state_set()
+            if not st.contains(Atspi.StateType.EDITABLE) or st.contains(Atspi.StateType.READ_ONLY):
+                return False
+            return acc.get_role() not in self.NOT_TEXT
+        except Exception:  # noqa: BLE001
+            return False
+
+    def on_event(self, ev):
+        if not ev.detail1:   # perte du focus : l'évènement « gain » de l'élément suivant suffit
+            return
+        ed = self.editable(ev.source)
+        self.last_editable = ed
+        recent = time.time() - self.tap[2] < 1.2
+        if ed and recent:
+            self.show()
+        elif not ed and self.shown and recent:
+            self.hide()
+
+    def show(self):
+        s = self.app.session
+        if not s or s.closed or self.app.standby or not self.app.cfg.get('auto_keyboard', True):
+            return
+        nx, ny, _ = self.tap   # GNOME (Wayland) ne donne pas la position du champ : on prend celle du doigt
+        s.send(f'KB 1 {max(0.0, nx - 0.05):.4f} {max(0.0, ny - 0.02):.4f} 0.1000 0.0400')
+        self.shown = True
+
+    def hide(self):
+        s = self.app.session
+        if s and not s.closed:
+            s.send('KB 0')
+        self.shown = False
 
 
 # ======================================================================================
@@ -702,6 +797,7 @@ class App:
         self.streamer = Streamer(self.cfg)
         self.input = Input(self)
         self.pairing = Pairing(self)
+        self.focus = FocusWatcher(self)
         self.session = None
         self.wanted = True
         self.size = (self.cfg['width'], self.cfg['height'])
@@ -1018,6 +1114,7 @@ class App:
         self.started_version = version()
         GLib.timeout_add_seconds(60, self.watch_version)
         self.build_tray()
+        self.focus.start()
         threading.Thread(target=self.connection_loop, daemon=True).start()
         signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(self.quit))
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, lambda *_: (self.quit(), False)[1])
