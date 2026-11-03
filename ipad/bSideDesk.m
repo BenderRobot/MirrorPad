@@ -394,10 +394,8 @@ static NSString *MPDeviceId(void){
       if(pairing)MPSetPairedPC(pcId,@{@"name":pcName?:@"PC",@"fp":fp,@"token":p[1],@"date":[NSDate date]});
       _auth=YES;_pcId=pcId;_pcName=pcName?:@"PC";
       NSString *n=pcName;BOOL wasPairing=pairing;
-      [self ui:^{
-       if(wasPairing&&self.hub.onNotice)self.hub.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);
-       [self.hub linkAuthenticated:self];
-      }];
+      [self.hub linkAuthenticated:self];   // tout de suite : les lignes qui suivent (Touch Bar, raccourcis…) doivent arriver au bon PC
+      if(wasPairing)[self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);}];
      } else if([k isEqualToString:@"ERR"]){
       NSString *why=p.count>1?p[1]:@"",*n=pcName;
       if([why isEqualToString:@"AUTH"]&&pcId)MPSetPairedPC(pcId,nil);   // le PC nous a oubliés : nouvel appairage au prochain essai
@@ -487,25 +485,28 @@ done:
 - (NSUInteger)pending {return self.active.pending;}
 - (void)disconnect {NSArray *all;@synchronized(self){all=[_all copy];}for(MPLink *l in all)[l disconnect];}
 
-// fil principal
+// appelable depuis n'importe quel fil : la décision est prise sous verrou, l'interface est prévenue sur le fil principal
+- (void)main:(dispatch_block_t)b {if(NSThread.isMainThread)b();else dispatch_async(dispatch_get_main_queue(),b);}
 - (void)linkAuthenticated:(MPLink*)link {
  NSString *preferred=[NSUserDefaults.standardUserDefaults stringForKey:@"activePC"];
  MPLink *cur=self.active;
- if(!cur||!cur.auth){[self activate:link];}
- else if(preferred&&[link.pcId isEqualToString:preferred]&&![cur.pcId isEqualToString:preferred]){[self activate:link];}   // le PC choisi en dernier reprend la main
- else [link send:@"STANDBY"];
- if(self.onPCsChanged)self.onPCsChanged();
+ if(!cur||!cur.auth)[self activate:link];
+ else if(preferred&&[link.pcId isEqualToString:preferred]&&![cur.pcId isEqualToString:preferred])[self activate:link];   // le PC choisi en dernier reprend la main
+ else {[link send:@"STANDBY"];[self main:^{if(self.onPCsChanged)self.onPCsChanged();}];}
 }
 - (void)activate:(MPLink*)link {
  if(!link.auth)return;
- MPLink *old=self.active;
- if(old==link)return;
- if(old){[old send:@"STANDBY"];[old endVideo];if(self.onSwitching)self.onSwitching(link.pcName);}
- @synchronized(self){_active=link;}
+ MPLink *old;
+ @synchronized(self){old=_active;if(old==link)return;_active=link;}
+ if(old){[old send:@"STANDBY"];[old endVideo];}
  if(link.pcId)[NSUserDefaults.standardUserDefaults setObject:link.pcId forKey:@"activePC"];
  [link send:@"ACTIVE"];
- if(self.onAuthenticated)self.onAuthenticated(link.pcName);
- if(self.onPCsChanged)self.onPCsChanged();
+ NSString *name=link.pcName;BOOL switched=old!=nil;
+ [self main:^{
+  if(switched&&self.onSwitching)self.onSwitching(name);
+  if(self.onAuthenticated)self.onAuthenticated(name);
+  if(self.onPCsChanged)self.onPCsChanged();
+ }];
 }
 - (void)activateNext {
  NSArray<MPLink*> *ls=self.links;
@@ -518,7 +519,7 @@ done:
  @synchronized(self){[_all removeObject:link];if(_active==link){_active=nil;wasActive=YES;}}
  if(wasActive){
   MPLink *next=self.links.firstObject;
-  if(next){if(self.onSwitching)self.onSwitching(next.pcName);[self activate:next];}
+  if(next){if(self.onSwitching)self.onSwitching(next.pcName);[self activate:next];}   // activate: préviendra l'interface
   else if(wasAuth&&self.onClosed)self.onClosed();
  }
  if(wasAuth&&self.onPCsChanged)self.onPCsChanged();
@@ -2032,7 +2033,7 @@ static NSString *MPRate(double kb){return kb>=1024?[[NSString stringWithFormat:@
  _bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;_bar.hidden=YES;
  _bar.collapsed=[MPDefaults() boolForKey:@"touchBarFolded"];
  _bar.onFold=^{typeof(self) s=w;if(!s)return;[UIView animateWithDuration:.25 animations:^{[s layoutContent];}];};
- _tbTitle=@"Bureau";_tbItems=@[@[@"Fenêtre ⇄ iPad",@"@swap"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]];
+ _tbTitle=@"bSideDesk";_tbItems=@[@[@"Clavier",@"@keyboard"],@[@"Copier",@"ctrl+c"],@[@"Coller",@"ctrl+v"],@[@"Annuler",@"ctrl+z"],@[@"Pavé numérique",@"@numpad"]];
  [_bar setTitle:_tbTitle items:_tbItems];
  _bar.onAction=^(NSString *keys){
   if([keys isEqualToString:@"@pc"])[weakInput activateNext];   // PC suivant

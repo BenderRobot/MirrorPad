@@ -38,8 +38,10 @@ DEFAULT_SHORTCUTS = [('Copier', 'ctrl+c'), ('Coller', 'ctrl+v'), ('Couper', 'ctr
                      ('Capture d\'écran', 'printscreen'), ('Terminal', 'ctrl+alt+t'), ('Verrouiller', 'win+l'), ('Fermer la fenêtre', 'alt+f4'),
                      ('Plein écran', 'f11'), ('Nouvel onglet', 'ctrl+t'), ('Volume −', 'voldown'), ('Volume +', 'volup'), ('Muet', 'mute'),
                      ('Lecture / Pause', 'playpause')]
-TOUCH_BAR = ['Clavier|@keyboard', 'Activités|win', 'Copier|ctrl+c', 'Coller|ctrl+v', 'Annuler|ctrl+z', 'Rétablir|ctrl+shift+z',
-             'Rechercher|ctrl+f', 'Onglet +|ctrl+t', 'Fermer|alt+f4', 'Capture|printscreen', 'Pavé numérique|@numpad']
+# Touch Bar pour GNOME : raccourcis par défaut de GNOME 43 (Super = touche Windows)
+TOUCH_BAR = ['Clavier|@keyboard', 'Rechercher|win', 'Applications|win+a', 'Fenêtre suivante|alt+tab', 'Agrandir|win+up',
+             '◀ Moitié|win+left', 'Moitié ▶|win+right', 'Réduire|win+h', 'Fermer|alt+f4', 'Notifications|win+v',
+             'Copier|ctrl+c', 'Coller|ctrl+v', 'Annuler|ctrl+z', 'Capture|printscreen', 'Pavé numérique|@numpad']
 ENCODER_NAMES = {'va': 'Intel VA-API', 'vaapi': 'Intel VA-API (gstreamer-vaapi)', 'x264': 'Processeur (x264)'}
 
 

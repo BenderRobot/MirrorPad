@@ -446,7 +446,9 @@ namespace bSideDesk
             if (fg == null || fg.Equals("explorer", StringComparison.OrdinalIgnoreCase) && lastFg.Length > 0 && IsShell(h)) return;   // clic sur le bureau : on garde la barre
             if (fg == lastFg) return;
             lastFg = fg;
-            s.Send(TouchBar.LineFor(fg));
+            var ipadDev = input.TargetDevice;
+            bool other = Screen.AllScreens.Any(sc => !string.Equals(sc.DeviceName, ipadDev, StringComparison.OrdinalIgnoreCase));
+            s.Send(TouchBar.LineFor(fg, other));
         }
         static bool IsShell(IntPtr h)
         {

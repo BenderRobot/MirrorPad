@@ -46,7 +46,8 @@ namespace bSideDesk
                                              "Rechercher|ctrl+f", "Bureau|win+d", "Vue des tâches|win+tab", "Capture|win+shift+s", "Pavé numérique|@numpad" };
 
         // ligne « TB <titre> <bouton> <bouton>… » pour le programme au premier plan
-        public static string LineFor(string process)
+        // otherScreen : le PC a un autre écran que l'iPad (sinon « Fenêtre ⇄ iPad » ne servirait à rien)
+        public static string LineFor(string process, bool otherScreen = true)
         {
             Tuple<string, string[]> p;
             string title; IEnumerable<string> buttons;
@@ -56,6 +57,7 @@ namespace bSideDesk
                 buttons = new[] { "Fenêtre ⇄ iPad|@swap" }.Concat(p.Item2);
             }
             else { title = "Bureau"; buttons = Default; }
+            if (!otherScreen) buttons = buttons.Where(b => !b.EndsWith("|@swap"));
             return "TB " + Uri.EscapeDataString(title) + " " + string.Join(" ", buttons.Select(Uri.EscapeDataString));
         }
 
