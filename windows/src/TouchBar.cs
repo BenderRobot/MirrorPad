@@ -164,6 +164,44 @@ namespace bSideDesk
             return n;
         }
 
+        // Après un changement de définition de l'écran de l'iPad (rotation, Touch Bar) : certaines applis
+        // (VS Code et autres applis Electron / Chromium) ne suivent pas la nouvelle taille quand elles sont agrandies :
+        // il reste des bandes blanches ou des morceaux de l'ancienne image. On les remet à la taille de l'écran
+        // (rétablir puis agrandir) et on force Windows à tout redessiner.
+        public static int RefitMaximized(System.Drawing.Rectangle ipad)
+        {
+            int n = 0;
+            if (ipad.Width <= 0) return 0;
+            var hwnds = new List<IntPtr>();
+            EnumWindows((h, l) => { hwnds.Add(h); return true; }, IntPtr.Zero);
+            foreach (var h in hwnds)
+            {
+                if (!IsWindowVisible(h) || IsIconic(h)) continue;
+                long ex = GetWindowLongPtr(h, -20).ToInt64(); if ((ex & 0x80) != 0) continue;
+                int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) continue;
+                RECT r; if (!GetWindowRect(h, out r)) continue;
+                if (!ipad.Contains((r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2)) continue;
+                if (IsZoomed(h))
+                {
+                    var wa = System.Windows.Forms.Screen.FromHandle(h).WorkingArea;
+                    // une fenêtre agrandie couvre la zone de travail (bordures invisibles de 8 px au plus en plus)
+                    bool fits = r.Left <= wa.Left && r.Top <= wa.Top + 1 && r.Right >= wa.Right && r.Bottom >= wa.Bottom
+                                && r.Left >= wa.Left - 16 && r.Right <= wa.Right + 16 && r.Bottom <= wa.Bottom + 16;
+                    if (!fits)
+                    {
+                        ShowWindow(h, 4);   // SW_SHOWNOACTIVATE : taille normale
+                        ShowWindow(h, 3);   // SW_MAXIMIZE : agrandie sur la nouvelle taille de l'écran
+                        n++;
+                    }
+                }
+                // nouveau cadre + tout redessiner (efface les restes de l'ancienne image)
+                SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);   // NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
+                RedrawWindow(h, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400 | 0x0100);   // INVALIDATE|ERASE|ALLCHILDREN|FRAME|UPDATENOW
+            }
+            return n;
+        }
+        [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, uint flags);
+
         // Filet de sécurité : toute fenêtre dont la barre de titre est hors de tous les écrans est ramenée en vue
         public static int Rescue()
         {

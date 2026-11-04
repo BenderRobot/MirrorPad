@@ -468,6 +468,12 @@ namespace bSideDesk
                     int ms = WaitStable(nb, 5000);
                     if (seq != rotSeq) return;   // un autre changement a suivi : c'est lui qui relancera l'image
                     Log.Write("bureau stable après " + ms + " ms");
+                    try
+                    {
+                        int n = WindowMover.RefitMaximized(nb);
+                        if (n > 0) Log.Write(n + " fenêtre(s) agrandie(s) remise(s) à la taille de l'écran");
+                    }
+                    catch (Exception e) { Log.Write("recalage des fenêtres : " + e.Message); }
                     if (HoldStream != null) HoldStream(0);
                 });
             }
