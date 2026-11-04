@@ -49,6 +49,12 @@ DEFAULT_SHORTCUTS = [('Copier', 'ctrl+c'), ('Coller', 'ctrl+v'), ('Couper', 'ctr
 TOUCH_BAR = ['Clavier|@keyboard', 'Rechercher|win', 'Applications|win+a', 'Fenêtre suivante|alt+tab', 'Agrandir|win+up',
              '◀ Moitié|win+left', 'Moitié ▶|win+right', 'Réduire|win+h', 'Fermer|alt+f4', 'Notifications|win+v',
              'Copier|ctrl+c', 'Coller|ctrl+v', 'Annuler|ctrl+z', 'Capture|printscreen', 'Plein écran|f11', 'Pavé numérique|@numpad']
+# Touch Bar quand un terminal a le focus : flèches (historique, déplacement), contrôle des commandes, copier / coller du terminal
+TOUCH_BAR_TERMINAL = ['Clavier|@keyboard', '↑|up', '↓|down', '←|left', '→|right', 'Tab|tab', 'Échap|esc',
+                      'Ctrl+C|ctrl+c', 'Ctrl+D|ctrl+d', 'Ctrl+Z|ctrl+z', 'Historique|ctrl+r', 'Effacer|ctrl+l',
+                      'Début|home', 'Fin|end', 'Page ↑|shift+pgup', 'Page ↓|shift+pgdn', 'Copier|ctrl+shift+c', 'Coller|ctrl+shift+v',
+                      '| (pipe)|bar', '~|tilde', 'Nouvel onglet|ctrl+shift+t', 'Pavé numérique|@numpad']
+TERMINALS = ('gnome-terminal', 'kgx', 'console', 'xterm', 'terminator', 'tilix', 'konsole', 'alacritty', 'kitty', 'xfce4-terminal', 'terminal')
 ENCODER_NAMES = {'va': 'Intel VA-API', 'vaapi': 'Intel VA-API (gstreamer-vaapi)', 'x264': 'Processeur (x264)'}
 
 
@@ -735,7 +741,7 @@ KEYSYMS = {'ctrl': 0xffe3, 'shift': 0xffe1, 'alt': 0xffe9, 'win': 0xffeb, 'super
            'home': 0xff50, 'end': 0xff57, 'pgup': 0xff55, 'pgdn': 0xff56, 'left': 0xff51, 'up': 0xff52, 'right': 0xff53, 'down': 0xff54,
            'printscreen': 0xff61, 'apps': 0xff67, 'plus': 0x2b, 'minus': 0x2d, 'period': 0x2e, 'comma': 0x2c,
            'volup': 0x1008ff13, 'voldown': 0x1008ff11, 'mute': 0x1008ff12, 'playpause': 0x1008ff14, 'next': 0x1008ff17,
-           'prev': 0x1008ff16, 'stop': 0x1008ff15, 'nummul': 0xffaa, 'numadd': 0xffab, 'numsub': 0xffad, 'numdec': 0xffae, 'numdiv': 0xffaf}
+           'prev': 0x1008ff16, 'stop': 0x1008ff15, 'bar': 0x7c, 'tilde': 0x7e, 'nummul': 0xffaa, 'numadd': 0xffab, 'numsub': 0xffad, 'numdec': 0xffae, 'numdiv': 0xffaf}
 BTN_LEFT, BTN_RIGHT = 0x110, 0x111
 # touches de modification (codes evdev) : niveau 1 = Maj, niveau 2 = AltGr, niveau 3 = Maj + AltGr
 EV_MODS = {'ctrl': 29, 'shift': 42, 'alt': 56, 'win': 125, 'super': 125, 'altgr': 100}
@@ -1069,6 +1075,14 @@ class FocusWatcher:
     def on_event(self, ev):
         if not ev.detail1:   # perte du focus : l'évènement « gain » de l'élément suivant suffit
             return
+        try:   # appli qui a le focus : un terminal a sa propre Touch Bar
+            src = ev.source
+            name = (src.get_application().get_name() or '').lower()
+            term = src.get_role() == Atspi.Role.TERMINAL or any(t in name for t in TERMINALS)
+            if term or src.get_role() not in (Atspi.Role.APPLICATION,):
+                self.app.set_terminal_focused(term)
+        except Exception:  # noqa: BLE001
+            pass
         ed = self.editable(ev.source)
         self.last_editable = ed
         recent = time.time() - self.tap[2] < 1.2
@@ -1350,7 +1364,7 @@ class App:
                 log("iPad revenu sur ce PC")
             self.standby = False
             if s:
-                s.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
+                s.send(self.touchbar_line())
             self.streamer.restart()   # toujours un nouveau flux (« V NEW ») : l'iPad ignore celui envoyé pendant la veille
         elif k == 'SLEEP':
             log('iPad verrouillé')
@@ -1387,6 +1401,20 @@ class App:
             return
 
     REFIT_MARK = os.path.join(DIR, 'recalage-en-cours')
+
+    def touchbar_line(self):
+        if getattr(self, 'terminal_focused', False):
+            return 'TB ' + urllib.parse.quote('Terminal') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR_TERMINAL)
+        return 'TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR)
+
+    def set_terminal_focused(self, on):
+        """Un terminal prend (ou perd) le focus : Touch Bar adaptée (flèches, Ctrl+C…)."""
+        if on == getattr(self, 'terminal_focused', False):
+            return
+        self.terminal_focused = on
+        s = self.session
+        if s and not s.closed and not self.standby:
+            s.send(self.touchbar_line())
     KB_LAYOUTS = {'fr': 'Français (AZERTY)', 'us': 'Anglais (QWERTY)'}
 
     def set_keyboard_layout(self, lay):
@@ -1573,7 +1601,7 @@ class App:
             threading.Thread(target=self.keepalive, args=(session,), daemon=True).start()
             session.send('N ' + socket.gethostname())
             session.send('SC ' + ' '.join(urllib.parse.quote(f'{l}|{c}') for l, c in self.cfg.get('shortcuts', DEFAULT_SHORTCUTS)))
-            session.send('TB ' + urllib.parse.quote('GNOME') + ' ' + ' '.join(urllib.parse.quote(b) for b in TOUCH_BAR))
+            session.send(self.touchbar_line())
             time.sleep(0.4)   # l'iPad annonce la taille de sa zone d'image (« RES w h ») dès la connexion
             while not session.closed and self.wanted:
                 if self.standby:
@@ -1632,7 +1660,7 @@ class App:
             time.sleep(1 if not getattr(self, 'sleeping', False) else 3)
 
     def watch_version(self):
-        """Paquet mis à jour par une autre session ou manuellement : relancer la nouvelle version."""
+        """Paquet mis à jour par le service système (minuterie bsidedesk-update) : on relance la nouvelle version."""
         if version() != self.started_version:
             log(f'nouvelle version installée ({version()}) : redémarrage')
             self.quit_and_restart()
