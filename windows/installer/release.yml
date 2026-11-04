@@ -30,6 +30,8 @@ jobs:
         run: |
           cc -std=c99 -Wall -Wextra -Werror -pedantic ipad/tests/handshake.c -o /tmp/bsidedesk-handshake
           /tmp/bsidedesk-handshake
+      - name: Tester le déploiement et la migration Debian
+        run: python3 -m unittest discover -s tests -v
 
   ipad:
     name: iPad (SRVHOME)
@@ -42,8 +44,7 @@ jobs:
           MP_VERSION: ${{ env.VERSION }}
         run: python3 ipad/build.py
       - name: Installer sur l'iPad
-        continue-on-error: true   # iPad éteint : le cron de rattrapage s'en chargera
-        run: python3 ipad/deploy.py --deb "ipad/build/bsidedesk_${VERSION}_iphoneos-arm.deb" --save
+        run: python3 ipad/deploy.py --deb "ipad/build/bsidedesk_${VERSION}_iphoneos-arm.deb" --save --allow-offline
       - uses: actions/upload-artifact@v4
         with:
           name: ipad
@@ -62,6 +63,10 @@ jobs:
         run: |
           mcs -out:/tmp/bsidedesk-update-tests.exe windows/src/UpdateInstaller.cs windows/tests/UpdateInstallerTests.cs
           mono /tmp/bsidedesk-update-tests.exe
+      - name: Tester les transferts interrompus
+        run: |
+          mcs -out:/tmp/bsidedesk-transfer-tests.exe windows/src/FileTransfer.cs windows/tests/FileTransferTests.cs
+          mono /tmp/bsidedesk-transfer-tests.exe
       - name: Signer les exe (Azure Trusted Signing, si configuré)
         env:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}

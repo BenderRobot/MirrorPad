@@ -36,16 +36,16 @@ cat > "$R/etc/chromium.d/bsidedesk" <<'CHR'
 export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland --force-renderer-accessibility"
 CHR
 install -m 644 fr.bsidedesk.update.policy "$R/usr/share/polkit-1/actions/fr.bsidedesk.update.policy"
-# mises à jour par le système (root), même sans session ouverte : au démarrage puis toutes les 30 min
-mkdir -p "$R/lib/systemd/system"
-install -m 644 bsidedesk-update.service "$R/lib/systemd/system/bsidedesk-update.service"
-install -m 644 bsidedesk-update.timer "$R/lib/systemd/system/bsidedesk-update.timer"
+# Les mises à jour automatiques sont pilotées uniquement par le réglage de l'app.
 cat > "$R/DEBIAN/postinst" <<'POST'
 #!/bin/sh
 set -e
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+  # Migration : arrêter l'ancienne minuterie, même si ses unités ont été retirées.
+  # Ne pas arrêter le service : il peut être en train d'installer ce paquet.
+  systemctl stop bsidedesk-update.timer >/dev/null 2>&1 || true
+  systemctl disable bsidedesk-update.timer >/dev/null 2>&1 || true
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now bsidedesk-update.timer >/dev/null 2>&1 || true
 fi
 exit 0
 POST

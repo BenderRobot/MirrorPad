@@ -317,7 +317,8 @@ namespace bSideDesk
                 ReturnParked();
                 input.Reply = line => s.Send(line);
                 s.LineReceived += input.Handle;
-                s.BinaryReceived += HandleBinary;
+                s.BinaryReceived += (type, data) => { lock (files) { if (!s.IsClosed) HandleBinary(type, data); } };
+                s.Closed += _ => { lock (files) files.CancelAll(); };
                 input.ResetDiagnostics();
                 sleepRequested = false; lastFg = "";   // la Touch Bar est renvoyée à la nouvelle session
                 ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(2000); FlushOutbox(); });   // fichiers en attente

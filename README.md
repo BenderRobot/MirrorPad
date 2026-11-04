@@ -153,6 +153,8 @@ sudo apt install ./bsidedesk_*_all.deb    # dépendances (GStreamer, PipeWire, i
 - **Appairage** : fenêtre sur le bureau, ou `bsidedesk --pair` dans un terminal (SSH) quand personne ne voit l'écran.
 - **Mises à jour** automatiques (toutes les 30 min) : `/usr/lib/bsidedesk/bsidedesk-update` lancé par `pkexec`
   (règle polkit `fr.bsidedesk.update` : sans mot de passe pour la session active, ne peut installer que la release officielle).
+  Elles fonctionnent lorsque l'application est ouverte et respectent sa case « Mises à jour automatiques ».
+  L'ancienne minuterie système est arrêtée et désactivée à la mise à niveau ; une installation déjà en cours peut se terminer.
 - Démarrage automatique à l'ouverture de la session GNOME (`/etc/xdg/autostart`). Réglages et journal : `~/.config/bsidedesk/`.
 - Plusieurs PC peuvent être connectés à l'iPad en même temps : bouton « ⇄ PC » de la Touch Bar pour passer de l'un à l'autre.
 

@@ -1632,7 +1632,7 @@ class App:
             time.sleep(1 if not getattr(self, 'sleeping', False) else 3)
 
     def watch_version(self):
-        """Paquet mis à jour par le service système (minuterie bsidedesk-update) : on relance la nouvelle version."""
+        """Paquet mis à jour par une autre session ou manuellement : relancer la nouvelle version."""
         if version() != self.started_version:
             log(f'nouvelle version installée ({version()}) : redémarrage')
             self.quit_and_restart()

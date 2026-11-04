@@ -48,6 +48,12 @@ Correction : préparer et valider tous les fichiers, appliquer avec un mécanism
 
 ### 3. Moyenne — désactiver les mises à jour Debian ne désactive pas le service système
 
+**Correction locale préparée le 4 novembre 2026 :** retrait des unités système du
+paquet, arrêt et désactivation de l'ancienne minuterie à la mise à niveau. Seule
+l'application lance désormais les mises à jour automatiques selon son réglage.
+Le service en cours n'est pas tué pour ne pas interrompre une installation.
+Test de construction et de migration du paquet ajouté à GitHub Actions.
+
 Sources : `linux/bsidedesk.py:1320,1534`, `linux/build-deb.sh:48`, `linux/bsidedesk-update.timer:5–6`.
 
 Le réglage auto_update arrête les recherches de l'application. Le paquet active aussi une minuterie système au démarrage puis toutes les 30 minutes ; le helper ne lit pas ce réglage et installe la dernière version indépendamment. L'utilisateur peut donc recevoir une mise à jour malgré son choix dans les réglages.
@@ -56,6 +62,12 @@ Correction : définir une politique cohérente entre service et application, ave
 
 ### 4. Moyenne — transferts Windows interrompus : fichiers et handles conservés
 
+**Correction locale préparée le 4 novembre 2026 :** récepteur extrait dans
+`FileTransfer.cs`, réception dans un fichier temporaire jusqu'à la fin, nettoyage
+sur déconnexion, réutilisation d'identifiant ou erreur d'écriture. Réception et
+déconnexion sont synchronisées. Tests compilés et exécutés sous Windows : abandon,
+reconnexion simulée, identifiant réutilisé, réception complète et collision.
+
 Sources : `windows/src/Extras.cs:133–185`, `windows/src/App.cs:58,360–363`.
 
 Le récepteur FileTransfer appartient à l'application et conserve ses transferts entre les sessions. Un FileStream n'est fermé que sur une trame de fin. Une déconnexion en milieu de transfert laisse le fichier partiel ouvert et son entrée en mémoire ; un nouveau début avec le même identifiant remplace l'entrée sans fermer l'ancien flux. Une succession de transferts interrompus peut accumuler handles et fichiers incomplets.
@@ -63,6 +75,12 @@ Le récepteur FileTransfer appartient à l'application et conserve ses transfert
 Correction : annuler et fermer les transferts à la déconnexion, traiter les identifiants réutilisés et enregistrer sous un nom temporaire jusqu'à réception complète. Tester coupure réseau puis reconnexion.
 
 ### 5. Moyenne — le déploiement iPad peut annoncer un succès après échec d'installation
+
+**Correction locale préparée le 4 novembre 2026 :** arrêt immédiat sur erreur de
+dpkg, contrôle de la version après installation, suppression de continue-on-error.
+Le workflow peut seulement différer une connexion SSH indisponible au contrôle
+préalable ; une erreur pendant l'installation bloque la publication. Tests Python
+et shell exécutés sans contacter d'appareil ; recette sur iPad encore nécessaire.
 
 Source : `ipad/deploy.py:26–32`.
 
