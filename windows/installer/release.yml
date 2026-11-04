@@ -19,8 +19,21 @@ env:
   VERSION: 1.0.${{ github.run_number }}
 
 jobs:
+  handshake-tests:
+    name: Authentification iPad (tests)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tester les transitions du protocole
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -pedantic ipad/tests/handshake.c -o /tmp/bsidedesk-handshake
+          /tmp/bsidedesk-handshake
+
   ipad:
     name: iPad (SRVHOME)
+    needs: handshake-tests
     runs-on: [self-hosted, Linux, X64]   # SRVHOME (seul runner auto-hébergé du dépôt)
     steps:
       - uses: actions/checkout@v4

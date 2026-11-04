@@ -1,6 +1,7 @@
 // bSideDesk — reçoit un flux H.264 (conteneur FLV sur TCP) envoyé par le PC
 // et l'affiche en plein écran. Décodage matériel via AVSampleBufferDisplayLayer (iOS 8+).
 #import <UIKit/UIKit.h>
+#include "MPHandshake.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #include <sys/socket.h>
@@ -298,7 +299,8 @@ static NSString *MPDeviceId(void){
  @synchronized(_queue){[_queue removeAllObjects];}
  _auth=NO;_closing=NO;
  NSData *certDer=nil;NSString *fp=nil;
- NSString *pcId=nil,*pcName=nil;BOOL pairing=NO;
+ NSString *pcId=nil,*pcName=nil;
+ MPHandshakeState handshake=MPWaitHello;
  NSMutableData *in=[NSMutableData data];
  CFAbsoluteTime last=CFAbsoluteTimeGetCurrent(),start=last;
 
@@ -352,6 +354,7 @@ static NSString *MPDeviceId(void){
    const uint8_t *h=in.bytes;size_t len=(size_t)h[1]<<16|(size_t)h[2]<<8|h[3];
    if(in.length<4+len)break;
    uint8_t type=h[0];
+   if(!_auth&&type!=1)goto done;
    if(type==2){
     if(_auth&&_videoFd>=0&&self.isActive){
      size_t w=0;while(w<len){ssize_t r=write(_videoFd,h+4+w,len-w);if(r<=0){if(r<0&&errno==EINTR)continue;[self endVideo];break;}w+=(size_t)r;}
@@ -370,7 +373,8 @@ static NSString *MPDeviceId(void){
     NSArray<NSString*> *p=[line componentsSeparatedByString:@" "];
     NSString *k=p.firstObject;
     if(!_auth){
-     if([k isEqualToString:@"HELLO"]&&p.count>=4){
+     if([k isEqualToString:@"HELLO"]){
+      if(handshake!=MPWaitHello||p.count!=4||![p[1] isEqualToString:@"2"]||!p[2].length||!p[3].length)goto done;
       pcId=p[2];pcName=[p[3] stringByRemovingPercentEncoding]?:p[3];
       NSDictionary *known=MPPairedPCs()[pcId];
       if(known){
@@ -380,29 +384,35 @@ static NSString *MPDeviceId(void){
         [self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Connexion refusée",[NSString stringWithFormat:@"Le certificat de « %@ » a changé. Si ce PC a été réinstallé, oubliez-le dans Réglages puis appairez-le à nouveau.",n],NO);}];
         goto done;
        }
-       [self sendNow:[NSString stringWithFormat:@"AUTH %@ %@",MPDeviceId(),known[@"token"]]];
+       NSString *token=known[@"token"];
+       if(!MPValidToken(token.UTF8String,[token lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))goto done;
+       if(![self sendNow:[NSString stringWithFormat:@"AUTH %@ %@",MPDeviceId(),token]])goto done;
+       if(!MPHandshakeHello(&handshake,1))goto done;
       } else {
-       uint8_t nonce[16];SecRandomCopyBytes(kSecRandomDefault,sizeof nonce,nonce);
+       uint8_t nonce[16];if(SecRandomCopyBytes(kSecRandomDefault,sizeof nonce,nonce)!=errSecSuccess)goto done;
        NSMutableData *m=[certDer mutableCopy];[m appendBytes:nonce length:sizeof nonce];
        uint8_t d[CC_SHA256_DIGEST_LENGTH];CC_SHA256(m.bytes,(CC_LONG)m.length,d);
        uint32_t v=((uint32_t)d[0]<<24|(uint32_t)d[1]<<16|(uint32_t)d[2]<<8|d[3])%1000000;
        NSString *code=[NSString stringWithFormat:@"%06u",v],*n=pcName;
-       pairing=YES;
        [self ui:^{if(self.hub.onPairing)self.hub.onPairing(n,code);}];
-       [self sendNow:[NSString stringWithFormat:@"PAIR %@ %@ %@",MPDeviceId(),MPEsc(UIDevice.currentDevice.name),MPHex(nonce,sizeof nonce)]];
+       if(![self sendNow:[NSString stringWithFormat:@"PAIR %@ %@ %@",MPDeviceId(),MPEsc(UIDevice.currentDevice.name),MPHex(nonce,sizeof nonce)]])goto done;
+       if(!MPHandshakeHello(&handshake,0))goto done;
       }
-     } else if([k isEqualToString:@"OK"]||([k isEqualToString:@"PAIRED"]&&p.count>=2&&pairing)){
-      if(pairing)MPSetPairedPC(pcId,@{@"name":pcName?:@"PC",@"fp":fp,@"token":p[1],@"date":[NSDate date]});
+     } else if([k isEqualToString:@"OK"]||[k isEqualToString:@"PAIRED"]){
+      BOOL wasPairing=[k isEqualToString:@"PAIRED"];
+      NSString *token=p.count==2?p[1]:nil;
+      if(!MPHandshakeFinish(&handshake,wasPairing,p.count,token.UTF8String,[token lengthOfBytesUsingEncoding:NSUTF8StringEncoding]))goto done;
+      if(wasPairing)MPSetPairedPC(pcId,@{@"name":pcName?:@"PC",@"fp":fp,@"token":token,@"date":[NSDate date]});
       _auth=YES;_pcId=pcId;_pcName=pcName?:@"PC";
-      NSString *n=pcName;BOOL wasPairing=pairing;
+      NSString *n=pcName;
       [self.hub linkAuthenticated:self];   // tout de suite : les lignes qui suivent (Touch Bar, raccourcis…) doivent arriver au bon PC
       if(wasPairing)[self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Appairage réussi",[NSString stringWithFormat:@"« %@ » est maintenant autorisé à utiliser cet iPad.",n],YES);}];
      } else if([k isEqualToString:@"ERR"]){
       NSString *why=p.count>1?p[1]:@"",*n=pcName;
-      if([why isEqualToString:@"AUTH"]&&pcId)MPSetPairedPC(pcId,nil);   // le PC nous a oubliés : nouvel appairage au prochain essai
+      if([why isEqualToString:@"AUTH"]&&handshake==MPWaitOK)MPSetPairedPC(pcId,nil);   // seulement après vérification du certificat
       [self ui:^{if(self.hub.onNotice)self.hub.onNotice(@"Connexion refusée",[why isEqualToString:@"REFUSED"]?[NSString stringWithFormat:@"L'appairage a été refusé sur « %@ ».",n]:@"Le PC ne reconnaît plus cet iPad : un nouvel appairage va être proposé.",NO);}];
       goto done;
-     }
+     } else goto done;   // aucune commande n'est permise avant la fin de l'authentification
     } else if(!self.isActive){
      // PC en veille : il garde la liaison ouverte (une ligne « Q » par seconde), on répond pour qu'il sache que l'iPad est là
      if([k isEqualToString:@"Q"])[self enqueue:1 data:[@"P 0" dataUsingEncoding:NSUTF8StringEncoding]];
