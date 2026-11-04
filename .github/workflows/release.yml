@@ -58,6 +58,10 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q mono-devel nsis
       - name: Compiler bSideDesk.exe
         run: sh windows/build.sh
+      - name: Tester la restauration des mises à jour
+        run: |
+          mcs -out:/tmp/bsidedesk-update-tests.exe windows/src/UpdateInstaller.cs windows/tests/UpdateInstallerTests.cs
+          mono /tmp/bsidedesk-update-tests.exe
       - name: Signer les exe (Azure Trusted Signing, si configuré)
         env:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}

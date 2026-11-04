@@ -31,6 +31,15 @@ Constat établi par lecture du chemin d'exécution ; exploitation réseau non ex
 
 ### 2. Élevée — une mise à jour Windows peut laisser l'application sans exécutable
 
+**Correction locale préparée le 4 novembre 2026 :** tous les fichiers sont préparés
+avant modification ; les originaux sont conservés puis restaurés en cas d'erreur.
+L'exécutable est remplacé après les fichiers annexes et le marqueur de succès fait
+partie de la même opération. Les recherches concurrentes sont bloquées. Tests
+compilés et exécutés sous Windows : installation normale, échec après remplacement
+de l'exécutable, exécutable verrouillé, archive incomplète. Tests ajoutés au job
+Windows de publication. Cette restauration traite les exceptions d'installation ;
+elle ne fournit pas de reprise après arrêt brutal ou coupure de courant.
+
 Source : `windows/src/App.cs:840–853`.
 
 L'exécutable courant est renommé en `.old` avant la copie de tous les nouveaux fichiers. Si une copie échoue avant la copie du nouvel exécutable (espace disque, verrouillage, antivirus), le catch écrit seulement dans le journal. L'application en cours peut continuer mais le prochain lancement échoue ; aucun rétablissement automatique de l'ancien exécutable n'est prévu.

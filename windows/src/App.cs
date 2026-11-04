@@ -61,6 +61,7 @@ namespace bSideDesk
         readonly MicPlayer mic = new MicPlayer();
         ClipboardWatcher clip;
         int ticks;
+        int updating;
         readonly bool elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
         static string ProgramsLnk { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "bSideDesk.lnk"); } }
@@ -806,6 +807,8 @@ namespace bSideDesk
 
         void CheckUpdate(bool manual)
         {
+            if (Interlocked.CompareExchange(ref updating, 1, 0) != 0) return;
+            bool queued = false;
             try
             {
                 var json = HttpGet("https://api.github.com/repos/" + cfg.UpdateRepo + "/releases/latest", false, null);
@@ -830,27 +833,29 @@ namespace bSideDesk
                 ZipFile.ExtractToDirectory(zip, x);
                 if (!File.Exists(Path.Combine(x, "bSideDesk.exe"))) throw new Exception("archive incomplète");
                 Post(() => ApplyUpdate(x, remote));
+                queued = true;
             }
             catch (Exception e)
             {
                 if (manual) Post(() => Balloon("Mise à jour impossible : " + e.Message, ToolTipIcon.Error));
             }
+            finally { if (!queued) Interlocked.Exchange(ref updating, 0); }
         }
 
         void ApplyUpdate(string dir, string version)
         {
             try
             {
-                var exe = Application.ExecutablePath;
-                var old = exe + ".old";
-                if (File.Exists(old)) File.Delete(old);
-                File.Move(exe, old);   // Windows autorise à renommer un programme en cours d'exécution
-                foreach (var f in Directory.GetFiles(dir)) File.Copy(f, Path.Combine(appDir, Path.GetFileName(f)), true);
-                File.WriteAllText(UpdatedFlag, version);
+                UpdateInstaller.Apply(dir, appDir, Application.ExecutablePath, UpdatedFlag, version);
                 Log.Write("mise à jour installée : " + version);
                 Restart();
             }
-            catch (Exception e) { Log.Write("mise à jour impossible : " + e.Message); }
+            catch (Exception e)
+            {
+                Log.Write("mise à jour impossible : " + e);
+                Balloon("Mise à jour impossible : " + e.Message, ToolTipIcon.Error);
+            }
+            finally { Interlocked.Exchange(ref updating, 0); }
         }
 
         // ---------- arrêt / relance ----------
