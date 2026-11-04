@@ -837,6 +837,7 @@ class Input:
     def __init__(self, app):
         self.app, self.screen, self.wheel, self.zoom = app, app.screen, 0, 0
         self.keymap = None   # chargée au premier caractère tapé
+        self.traced = 0
         self.left = False
 
     @property
@@ -855,6 +856,20 @@ class Input:
 
     def code(self, ev, down):
         self.screen.notify('NotifyKeyboardKeycode', '(ub)', ev, down)
+
+    def mod(self, ev, down):
+        """Maj / AltGr : appel qui ATTEND que GNOME l'ait pris en compte, puis un court délai, avant la touche.
+        Envoyés « sans réponse » comme les autres touches, GNOME 43 les applique parfois après la touche
+        (Maj perdu : « 3 » donne « \" » sur un clavier AZERTY)."""
+        path = self.screen.rd_path
+        if not path:
+            return
+        try:
+            self.screen.bus.call_sync(self.screen.RD, path, self.screen.RD + '.Session', 'NotifyKeyboardKeycode',
+                                      GLib.Variant('(ub)', (ev, down)), None, Gio.DBusCallFlags.NONE, 500, None)
+        except GLib.Error:
+            self.code(ev, down)
+        time.sleep(0.012)
 
     # Les caractères sont tapés par touches physiques, d'après la disposition du clavier de GNOME (AZERTY…) :
     # par symbole, GNOME 43 oublie parfois Maj / AltGr (chiffres, majuscules, @, #…).
@@ -875,12 +890,16 @@ class Input:
             return
         ev, level = loc
         mods = [m for m in self.level_mods(level) if m not in held]
+        if self.traced < 12:   # premiers caractères tapés : notés dans le journal (diagnostic du clavier)
+            self.traced += 1
+            log(f"frappe {chr(sym) if sym < 0x110000 and sym >= 0x20 and sym < 0x100 else hex(sym)} -> "
+                f"{'+'.join({EV_SHIFT: 'Maj', EV_ALTGR: 'AltGr'}[m] for m in mods) + '+' if mods else ''}touche {ev}")
         for m in mods:
-            self.code(m, True)
+            self.mod(m, True)
         self.code(ev, True)
         self.code(ev, False)
         for m in reversed(mods):
-            self.code(m, False)
+            self.mod(m, False)
 
     def combo(self, text):
         parts = [x for x in text.lower().split('+') if x]
